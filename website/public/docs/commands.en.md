@@ -2,90 +2,23 @@
 
 **Magic commands** are special instructions prefixed with `/` that let you directly control conversation state without waiting for the AI to interpret your intent.
 
-Five commands are currently supported:
+### Context Management
 
-- **`/compact`** — Compress the current conversation, generate a summary and save memories
-- **`/new`** — Start a new conversation, saving memories in the background
-- **`/clear`** — Completely clear everything, without saving anything
-- **`/history`** — View conversation history with detailed token usage breakdown
-- **`/compact_str`** — View the current compressed summary (read-only)
+| Command    | Wait   | Compressed Summary | Long-term Memory   | Response Content              |
+| ---------- | ------ | ------------------ | ------------------ | ----------------------------- |
+| `/compact` | ⏳ Yes | 📦 Generate new    | ✅ Background save | ✅ Compact complete + Summary |
+| `/new`     | ⚡ No  | 🗑️ Clear           | ✅ Background save | ✅ New conversation prompt    |
+| `/clear`   | ⚡ No  | 🗑️ Clear           | ❌ No save         | ✅ History cleared prompt     |
 
-> If you're not yet familiar with concepts like "compaction" or "long-term memory", we recommend reading the [Introduction](./intro.en.md) first.
+### Context Debugging
 
----
-
-## Command Comparison
-
-| Command        | Requires Wait | Compressed Summary | Long-term Memory    | Message History     | Context Usage            |
-| -------------- | ------------- | ------------------ | ------------------- | ------------------- | ------------------------ |
-| `/compact`     | Yes           | Generates new      | Saved in background | Marked as compacted | -                        |
-| `/new`         | No            | Cleared            | Saved in background | Marked as compacted | -                        |
-| `/clear`       | No            | Cleared            | Not saved           | Fully cleared       | -                        |
-| `/history`     | No            | -                  | -                   | Read-only view      | 📊 Token details + Usage |
-| `/compact_str` | No            | -                  | -                   | -                   | 📖 View summary content  |
-
----
-
-## /compact — Compress the Current Conversation
-
-Manually trigger conversation compaction, condensing all current messages into a summary (requires waiting), while saving to long-term memory in the background.
-
-```
-/compact
-```
-
-Example response:
-
-```
-**Compact Complete!**
-
-- Messages compacted: 12
-**Compressed Summary:**
-User requested help building a user authentication system, login endpoint implementation completed...
-- Summary task started in background
-```
-
-> Unlike auto-compaction, `/compact` compresses **all** current messages, not just the portion exceeding the threshold.
-
----
-
-## /new — Clear Context and Save Memories
-
-Immediately clear the current context and start a fresh conversation; history is saved to long-term memory in the background.
-
-```
-/new
-```
-
-Example response:
-
-```
-**New Conversation Started!**
-
-- Summary task started in background
-- Ready for new conversation
-```
-
----
-
-## /clear — Clear Context (Without Saving Memories)
-
-Immediately clear the current context, including message history and compressed summaries. Nothing is saved to long-term memory.
-
-```
-/clear
-```
-
-Example response:
-
-```
-**History Cleared!**
-
-- Compressed summary reset
-- Memory is now empty
-```
-
-> ⚠️ `/clear` is **irreversible**! Unlike `/new`, cleared content will not be saved.
+| Command         | Response Content              |
+| --------------- | ----------------------------- |
+| `/history`      | 📋 Message list + Token stats |
+| `/message`      | 📄 Specified message details  |
+| `/compact_str`  | 📝 Compressed summary content |
+| `/dump_history` | 📁 Exported history file path |
+| `/load_history` | ✅ History load result        |
 
 ---
 
@@ -97,7 +30,7 @@ Display a list of all uncompressed messages in the current conversation, along w
 /history
 ```
 
-Example response:
+**Example response:**
 
 ```
 **Conversation History**
@@ -121,7 +54,45 @@ Example response:
     preview: Can you add error handling?
 ```
 
-> 💡 **Tip**: Use `/history` frequently to monitor your context usage. When `Context usage` approaches 100%, it indicates the conversation is about to trigger auto-compaction. You can proactively use `/compact` or `/new` to manage context before this happens.
+> 💡 **Tip**: Use `/history` frequently to monitor your context usage.
+>
+> When `Context usage` approaches 75%, the conversation is about to trigger auto-`compact`.
+>
+> If context exceeds the maximum limit, please report the model and `/history` logs to the community, then use `/compact` or `/new` to manage context.
+>
+> Token calculation logic: [ReMeInMemoryMemory implementation](https://github.com/agentscope-ai/ReMe/blob/v0.3.0.6b2/reme/memory/file_based/reme_in_memory_memory.py#L122).
+
+---
+
+## /message — View Single Message
+
+View detailed content of a specific message by index.
+
+```
+/message <index>
+```
+
+**Parameters:**
+
+- `index` - Message index number (starting from 1)
+
+**Example:**
+
+```
+/message 1
+```
+
+**Output:**
+
+```
+**Message 1/3**
+
+- **Timestamp:** 2024-01-15 10:30:00
+- **Name:** user
+- **Role:** user
+- **Content:**
+Write me a Python function that implements quicksort
+```
 
 ---
 
@@ -133,7 +104,7 @@ Display the current compressed summary content.
 /compact_str
 ```
 
-Example response (when summary exists):
+**Example response (when summary exists):**
 
 ```
 **Compressed Summary**
@@ -141,7 +112,7 @@ Example response (when summary exists):
 User requested help building a user authentication system, login endpoint implementation completed...
 ```
 
-Example response (when no summary):
+**Example response (when no summary):**
 
 ```
 **No Compressed Summary**
@@ -152,17 +123,132 @@ Example response (when no summary):
 
 ---
 
-## Daemon commands (ops)
+## /compact — Compress Current Conversation
 
-In chat, send `/daemon <subcommand>` or use short names (e.g. `/status`). From the terminal, run `copaw daemon <subcommand>`. These run without the Agent.
+Manually trigger conversation compaction, condensing all current messages into a summary (**requires waiting**), while saving to long-term memory in the background.
 
-| Command                             | Description                                                                                  |
-| ----------------------------------- | -------------------------------------------------------------------------------------------- |
-| `/daemon status` or `/status`       | Show status (config, working dir, memory manager)                                            |
-| `/daemon restart` or `/restart`     | In-process restart (channels, cron, MCP) when in chat; from CLI prints instructions          |
-| `/daemon reload-config`             | Re-read and validate config (channel/MCP changes require /daemon restart or process restart) |
-| `/daemon version`                   | Version and paths (working dir, log file)                                                    |
-| `/daemon logs` or `/daemon logs 50` | Last N lines of console log (default 100; from `copaw.log` in working dir)                   |
+```
+/compact
+```
+
+**Example response:**
+
+```
+**Compact Complete!**
+
+- Messages compacted: 12
+**Compressed Summary:**
+User requested help building a user authentication system, login endpoint implementation completed...
+- Summary task started in background
+```
+
+> Unlike auto-compaction, `/compact` compresses **all** current messages, not just the portion exceeding the threshold.
+
+---
+
+## /new — Clear Context and Save Memories
+
+**Immediately clear the current context** and start a fresh conversation. History is saved to long-term memory in the background.
+
+```
+/new
+```
+
+**Example response:**
+
+```
+**New Conversation Started!**
+
+- Summary task started in background
+- Ready for new conversation
+```
+
+---
+
+## /clear — Clear Context (Without Saving Memories)
+
+**Immediately clear the current context**, including message history and compressed summaries. Nothing is saved to long-term memory.
+
+```
+/clear
+```
+
+**Example response:**
+
+```
+**History Cleared!**
+
+- Compressed summary reset
+- Memory is now empty
+```
+
+> ⚠️ **Warning**: `/clear` is **irreversible**! Unlike `/new`, cleared content will not be saved.
+
+---
+
+## /dump_history — Export Conversation History
+
+Save current conversation history (including compressed summary) to a JSONL file for debugging and backup.
+
+```
+/dump_history
+```
+
+**Example response:**
+
+```
+**History Dumped!**
+
+- Messages saved: 15
+- Has summary: true
+- File: `/path/to/workspace/debug_history.jsonl`
+```
+
+> 💡 **Tip**: The exported file can be used with `/load_history` to restore conversation history, or for debugging analysis.
+
+---
+
+## /load_history — Load Conversation History
+
+Load conversation history from a JSONL file into current memory. **Existing memory will be cleared first**.
+
+```
+/load_history
+```
+
+**Example response:**
+
+```
+**History Loaded!**
+
+- Messages loaded: 15
+- Has summary: true
+- File: `/path/to/workspace/debug_history.jsonl`
+- Memory cleared before loading
+```
+
+**Notes:**
+
+- File source: Loaded from `debug_history.jsonl` in the workspace directory
+- Maximum load: 10,000 messages
+- If the first message in the file contains a compressed summary marker, the summary will be restored automatically
+- Current memory is **cleared before loading** — make sure to backup important content
+
+> ⚠️ **Warning**: `/load_history` clears current memory before loading. Existing conversation will be lost!
+
+---
+
+## Daemon Commands (Ops)
+
+In chat, send `/daemon <subcommand>` or use short names (e.g., `/status` is equivalent to `/daemon status`). From the terminal, run `copaw daemon <subcommand>`. These run without going through the Agent.
+
+| Command                             | Description                                                                                    |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `/daemon status` or `/status`       | Show runtime status (config, working directory, memory service, etc.)                          |
+| `/daemon restart` or `/restart`     | In-process restart (channels, cron, MCP) when in chat; from CLI prints instructions only       |
+| `/daemon reload-config`             | Re-read and validate config (channel/MCP changes require `/daemon restart` or process restart) |
+| `/daemon version`                   | Version number, working directory, log path                                                    |
+| `/daemon logs` or `/daemon logs 50` | View last N lines of console log (default 100, from `copaw.log` in working directory)          |
 
 From the terminal:
 
@@ -171,12 +257,3 @@ copaw daemon status
 copaw daemon version
 copaw daemon logs -n 50
 ```
-
----
-
-## Related Pages
-
-- [Introduction](./intro.en.md) — What this project can do
-- [Console](./console.en.md) — Manage Agent state in the console
-- [Configuration & Working Directory](./config.en.md) — Working directory & config
-- [CLI](./cli.en.md) — Command-line tool reference

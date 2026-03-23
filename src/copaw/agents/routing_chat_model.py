@@ -30,12 +30,7 @@ class RoutingDecision:
 
 
 class RoutingPolicy:
-    """Phase-1 routing policy: use request shape first, mode as fallback.
-
-    This keeps routing explainable and stable:
-    - route cloud for requests that are structurally harder for local models
-    - otherwise respect the configured local/cloud preference
-    """
+    """Phase-1 routing policy: use request shape first, mode as fallback."""
 
     def __init__(self, cfg: AgentsLLMRoutingConfig):
         self.cfg = cfg
@@ -265,7 +260,10 @@ class RoutingChatModel(ChatModelBase):
             fallback.model
             return fallback, RoutingDecision(
                 route=fallback_route,
-                reasons=[*decision.reasons, f"fallback:{decision.route}_load_error"],
+                reasons=[
+                    *decision.reasons,
+                    f"fallback:{decision.route}_load_error",
+                ],
             )
 
 

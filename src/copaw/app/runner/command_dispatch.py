@@ -7,22 +7,22 @@ from __future__ import annotations
 
 import logging
 from typing import AsyncIterator
+from typing import TYPE_CHECKING
 
-from reme.memory.file_based_copaw import CoPawInMemoryMemory
 from agentscope.message import Msg, TextBlock
-
-from ...agents.command_handler import CommandHandler
-from ...agents.model_factory import create_model_and_formatter
-from ...agents.utils.token_counting import _get_token_counter
-from ...config import load_config
 
 from .daemon_commands import (
     DaemonContext,
     DaemonCommandHandlerMixin,
     parse_daemon_query,
 )
+from ...agents.command_handler import CommandHandler
+from ...config.config import load_agent_config
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .runner import AgentRunner
 
 
 def _get_last_user_text(msgs) -> str | None:
@@ -60,24 +60,10 @@ def _is_command(query: str | None) -> bool:
     return _is_conversation_command(query)
 
 
-class _LightweightSessionAgent:
-    """Minimal agent-like object for session load/save (memory only)."""
-
-    def __init__(self, memory: CoPawInMemoryMemory) -> None:
-        self.memory = memory
-
-    def state_dict(self) -> dict:
-        return {"memory": self.memory.state_dict()}
-
-    def load_state_dict(self, state_dict: dict, strict: bool = True) -> None:
-        mem = state_dict.get("memory", state_dict)
-        self.memory.load_state_dict(mem, strict=strict)
-
-
 async def run_command_path(
     request,
     msgs,
-    runner,
+    runner: AgentRunner,
 ) -> AsyncIterator[tuple]:
     """Run command path and yield (msg, last) for each response.
 
@@ -100,11 +86,11 @@ async def run_command_path(
     parsed = parse_daemon_query(query)
     if parsed is not None:
         handler = DaemonCommandHandlerMixin()
-        restart_cb = getattr(runner, "_restart_callback", None)
+        manager = getattr(runner, "_manager", None)
         if parsed[0] == "restart":
             logger.info(
-                "run_command_path: daemon restart, callback=%s",
-                "set" if restart_cb is not None else "None",
+                "run_command_path: daemon restart, manager=%s",
+                "set" if manager is not None else "None",
             )
             # Yield hint first so user sees it before restart runs.
             hint = Msg(
@@ -115,48 +101,39 @@ async def run_command_path(
                         type="text",
                         text=(
                             "**Restart in progress**\n\n"
-                            "- The service may be unresponsive for a while. "
+                            "- Reloading agent with zero-downtime. "
                             "Please wait."
                         ),
                     ),
                 ],
             )
-            yield (hint, True)
+            yield hint, True
+
+        agent_id = runner.agent_id
         context = DaemonContext(
-            load_config_fn=load_config,
+            load_config_fn=lambda: load_agent_config(agent_id),
             memory_manager=runner.memory_manager,
-            restart_callback=restart_cb,
+            manager=manager,
+            agent_id=agent_id,
+            session_id=session_id,
         )
         msg = await handler.handle_daemon_command(query, context)
-        yield (msg, True)
+        yield msg, True
         logger.info("handle_daemon_command %s completed", query)
         return
 
     # Conversation path: lightweight memory + CommandHandler
-    _, formatter = create_model_and_formatter()
-    token_counter = _get_token_counter()
-    config = load_config()
-    max_input_length = config.agents.running.max_input_length
-
-    memory = CoPawInMemoryMemory(
-        token_counter=token_counter,
-        formatter=formatter,
-        max_input_length=max_input_length,
+    memory = runner.memory_manager.get_in_memory_memory()
+    session_state = await runner.session.get_session_state_dict(
+        session_id=session_id,
+        user_id=user_id,
     )
-    light = _LightweightSessionAgent(memory=memory)
-    if session_id and user_id:
-        try:
-            await runner.session.load_session_state(
-                session_id=session_id,
-                user_id=user_id,
-                agent=light,
-            )
-        except ValueError:
-            pass  # No session file yet
+    memory_state = session_state.get("agent", {}).get("memory", {})
+    memory.load_state_dict(memory_state, strict=False)
 
     conv_handler = CommandHandler(
         agent_name="Friday",
-        memory=light.memory,
+        memory=memory,
         memory_manager=runner.memory_manager,
         enable_memory_manager=runner.memory_manager is not None,
     )
@@ -168,11 +145,22 @@ async def run_command_path(
             role="assistant",
             content=[TextBlock(type="text", text=str(e))],
         )
-    yield (response_msg, True)
+    yield response_msg, True
 
+    # Update memory key with session_id & user_id to session,
+    # but only if identifiers are present
     if session_id and user_id:
-        await runner.session.save_session_state(
+        await runner.session.update_session_state(
             session_id=session_id,
+            key="agent.memory",
+            value=memory.state_dict(),
             user_id=user_id,
-            agent=light,
+        )
+    else:
+        logger.warning(
+            "Skipping session_state update for conversation"
+            " memory due to missing session_id or user_id (session_id=%r, "
+            "user_id=%r)",
+            session_id,
+            user_id,
         )

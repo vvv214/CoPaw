@@ -2,170 +2,311 @@
 # pylint: disable=too-many-branches
 """Memory Manager for CoPaw agents.
 
-Inherits from ReMeCopaw to provide memory management capabilities including:
-- Message compaction and summarization
-- Semantic memory search
-- Memory file retrieval
-- Tool result compaction
+Extends ReMeLight to provide memory management capabilities including:
+- Message compaction with configurable ratio
+- Memory summarization with tool support
+- Vector and full-text search integration
+- Embedding configuration from environment variables
 """
 import logging
+import os
+import platform
 
 from agentscope.formatter import FormatterBase
-from agentscope.message import Msg
+from agentscope.message import Msg, TextBlock
 from agentscope.model import ChatModelBase
-from agentscope.token import HuggingFaceTokenCounter
-from agentscope.tool import Toolkit
-
-from ...config.utils import load_config
-from ...constant import MEMORY_COMPACT_RATIO
+from agentscope.tool import Toolkit, ToolResponse
+from copaw.agents.model_factory import create_model_and_formatter
+from copaw.agents.tools import read_file, write_file, edit_file
+from copaw.agents.utils import get_copaw_token_counter
+from copaw.config import load_config
+from copaw.config.config import load_agent_config
 
 logger = logging.getLogger(__name__)
 
 # Try to import reme, log warning if it fails
 try:
-    from reme.reme_copaw import ReMeCopaw
+    from reme.reme_light import ReMeLight
 
     _REME_AVAILABLE = True
 
-except ImportError:
+except ImportError as e:
     _REME_AVAILABLE = False
-    logger.warning("reme package not installed.")
+    logger.warning(f"reme package not installed. {e}")
 
-    class ReMeCopaw:  # type: ignore
+    class ReMeLight:  # type: ignore
         """Placeholder when reme is not available."""
 
+        async def start(self) -> None:
+            """No-op start when reme is unavailable."""
 
-class MemoryManager(ReMeCopaw):
-    """Memory manager that extends ReMeCopaw functionality for CoPaw agents.
+
+class MemoryManager(ReMeLight):
+    """Memory manager that extends ReMeLight for CoPaw agents.
 
     This class provides memory management capabilities including:
-    - Memory compaction for long conversations
-    - Semantic memory search using vector and full-text search
-    - Memory file retrieval with pagination
-    - Tool result compaction with file-based storage
+    - Memory compaction for long conversations via compact_memory()
+    - Memory summarization with file operation tools via summary_memory()
+    - In-memory memory retrieval via get_in_memory_memory()
+    - Configurable vector search and full-text search backends
     """
 
     def __init__(
         self,
         working_dir: str,
-        chat_model: ChatModelBase,
-        formatter: FormatterBase,
-        token_counter: HuggingFaceTokenCounter,
-        toolkit: Toolkit,
-        max_input_length: int,
-        memory_compact_ratio: float,
-        vector_weight: float = 0.7,
-        candidate_multiplier: float = 3.0,
-        tool_result_threshold: int = 1000,
-        retention_days: int = 7,
+        agent_id: str,
     ):
-        """Initialize MemoryManager with ReMeCopaw configuration.
+        """Initialize MemoryManager with ReMeLight configuration.
 
         Args:
             working_dir: Working directory path for memory storage
-            chat_model: Language model for generating summaries
-            formatter: Formatter for structuring model inputs/outputs
-            token_counter: Token counting utility for length management
-            toolkit: Collection of tools available to the application
-            max_input_length: Maximum allowed input length in tokens
-            memory_compact_ratio: Ratio at which to trigger compaction
-                (0.0-1.0)
-            vector_weight: Weight for vector search in hybrid search (0.0-1.0)
-            candidate_multiplier: Multiplier for candidate retrieval in search
-            tool_result_threshold: Size threshold for tool result compaction
-            retention_days: Number of days to retain tool result files
+            agent_id: Agent ID for loading configuration
 
-        You're welcome to submit a PR and help build a better memory mechanism!
-        Main Entry:
-            https://github.com/agentscope-ai/ReMe/blob/main/reme/reme_copaw.py
-        File Based Memory:
-            https://github.com/agentscope-ai/ReMe/tree/main/reme/memory/file_based_copaw
+        Embedding Config:
+            api_key, base_url, model_name: config > env var > default
+            Other params: from embedding_config only
+
+        Environment Variables:
+            EMBEDDING_API_KEY: API key (fallback if not in config)
+            EMBEDDING_BASE_URL: Base URL (fallback if not in config)
+            EMBEDDING_MODEL_NAME: Model name (fallback if not in config)
+            FTS_ENABLED: Enable full-text search (default: true)
+            MEMORY_STORE_BACKEND: Memory backend
+            - auto/local/chroma (default: auto)
+
+        Note:
+            Vector search requires api_key, base_url, and model_name.
         """
-        if not _REME_AVAILABLE:
-            raise RuntimeError("reme package not installed.")
+        # Extract configuration from agent_config
+        self.agent_id: str = agent_id
 
-        # Get language from config if not provided
-        global_config = load_config()
-        language = "zh" if global_config.agents.language == "zh" else ""
+        if not _REME_AVAILABLE:
+            logger.warning(
+                "reme package not available, memory features will be limited",
+            )
+            return
+
+        # Get embedding config (supports hot-reload)
+        emb_config = self.get_embedding_config()
+
+        # Determine if vector search should be enabled based on configuration
+        # Vector search requires base_url and model_name
+        vector_enabled = bool(emb_config["base_url"]) and bool(
+            emb_config["model_name"],
+        )
+
+        # Log embedding config (mask api_key for security)
+        log_cfg = {
+            **emb_config,
+            "api_key": self.mask_key(emb_config["api_key"]),
+        }
+        logger.info(
+            f"Embedding config: {log_cfg}, vector_enabled={vector_enabled}",
+        )
+
+        # Check if full-text search (FTS) is enabled via environment variable
+        fts_enabled = os.environ.get("FTS_ENABLED", "true").lower() == "true"
+
+        # Determine the memory store backend to use
+        # "auto" selects based on platform
+        # (local for Windows, chroma otherwise)
+        memory_store_backend = os.environ.get("MEMORY_STORE_BACKEND", "auto")
+        if memory_store_backend == "auto":
+            memory_backend = (
+                "local" if platform.system() == "Windows" else "chroma"
+            )
+        else:
+            memory_backend = memory_store_backend
 
         # Initialize parent ReMeCopaw class
         super().__init__(
             working_dir=working_dir,
-            chat_model=chat_model,
-            formatter=formatter,
-            token_counter=token_counter,
-            toolkit=toolkit,
-            max_input_length=max_input_length,
-            memory_compact_ratio=memory_compact_ratio,
-            language=language,
-            vector_weight=vector_weight,
-            candidate_multiplier=candidate_multiplier,
-            tool_result_threshold=tool_result_threshold,
-            retention_days=retention_days,
+            default_embedding_model_config=emb_config,
+            default_file_store_config={
+                "backend": memory_backend,
+                "store_name": "copaw",
+                "vector_enabled": vector_enabled,
+                "fts_enabled": fts_enabled,
+            },
         )
 
-    def update_config_params(self):
-        global_config = load_config()
+        self.summary_toolkit = Toolkit()
+        self.summary_toolkit.register_tool_function(read_file)
+        self.summary_toolkit.register_tool_function(write_file)
+        self.summary_toolkit.register_tool_function(edit_file)
 
-        super().update_params(
-            max_input_length=global_config.agents.running.max_input_length,
-            memory_compact_ratio=MEMORY_COMPACT_RATIO,
-            language=global_config.agents.language,
-        )
+        self.chat_model: ChatModelBase | None = None
+        self.formatter: FormatterBase | None = None
+
+    @staticmethod
+    def mask_key(key: str) -> str:
+        """Mask API key, showing first 5 chars and masking rest with *."""
+        if not key:
+            return ""
+        if len(key) <= 5:
+            return key
+        return key[:5] + "*" * (len(key) - 5)
+
+    def get_embedding_config(self) -> dict:
+        """Get embedding config. Priority: config > env var > default."""
+        cfg = load_agent_config(self.agent_id).running.embedding_config
+
+        # "use_dimensions is used because some models in vLLM
+        # do not support the dimensions parameter."
+        return {
+            "backend": cfg.backend,
+            "api_key": cfg.api_key or os.getenv("EMBEDDING_API_KEY", ""),
+            "base_url": cfg.base_url or os.getenv("EMBEDDING_BASE_URL", ""),
+            "model_name": cfg.model_name
+            or os.getenv("EMBEDDING_MODEL_NAME", ""),
+            "dimensions": cfg.dimensions,
+            "enable_cache": cfg.enable_cache,
+            "use_dimensions": cfg.use_dimensions,
+            "max_cache_size": cfg.max_cache_size,
+            "max_input_length": cfg.max_input_length,
+            "max_batch_size": cfg.max_batch_size,
+        }
+
+    def prepare_model_formatter(self) -> None:
+        """Prepare and initialize the chat model and formatter.
+
+        Lazily initializes the chat_model and formatter attributes if they
+        haven't been set yet. This method is called before compaction or
+        summarization operations that require model access.
+
+        Note:
+            Logs a warning if the model and formatter are not already
+            initialized, as this indicates a potential configuration issue.
+        """
+        if self.chat_model is None or self.formatter is None:
+            logger.warning("Model and formatter not initialized.")
+            chat_model, formatter = create_model_and_formatter(self.agent_id)
+            if self.chat_model is None:
+                self.chat_model = chat_model
+            if self.formatter is None:
+                self.formatter = formatter
+
+    async def restart_embedding_model(self):
+        """Restart the embedding model with current config."""
+        emb_config = self.get_embedding_config()
+        restart_config = {
+            "embedding_models": {
+                "default": emb_config,
+            },
+        }
+        await self.restart(restart_config=restart_config)
 
     async def compact_memory(
         self,
         messages: list[Msg],
         previous_summary: str = "",
+        **_kwargs,
     ) -> str:
-        """
-        Compact a list of messages into a condensed summary.
-
-        This method uses the Compactor to reduce the length of message history
-        while preserving essential information. It's useful when conversation
-        history approaches the maximum input length limit.
+        """Compact a list of messages into a condensed summary.
 
         Args:
-            messages (list[Msg]): The list of messages to compact
-            previous_summary (str): Optional previous summary to incorporate
-                into the compaction process for continuity
+            messages: List of Msg objects to compact
+            previous_summary: Optional previous summary to incorporate
+            **_kwargs: Additional keyword arguments (ignored)
 
         Returns:
-            str: A compacted summary of messages, or empty string on failure
-
-        Note:
-            - Compaction uses the configured language model to generate
-              summaries
-            - The compaction threshold determines when compaction is triggered
-            - If compaction fails, an empty string is returned
+            str: Condensed summary of the messages
         """
-        self.update_config_params()
+        self.prepare_model_formatter()
+
+        agent_config = load_agent_config(self.agent_id)
+        token_counter = get_copaw_token_counter(agent_config)
+
         return await super().compact_memory(
             messages=messages,
+            as_llm=self.chat_model,
+            as_llm_formatter=self.formatter,
+            as_token_counter=token_counter,
+            language=agent_config.language,
+            max_input_length=agent_config.running.max_input_length,
+            compact_ratio=agent_config.running.memory_compact_ratio,
             previous_summary=previous_summary,
         )
 
-    async def summary_memory(self, messages: list[Msg]) -> str:
-        """
-        Generate a comprehensive summary of the given messages.
+    async def summary_memory(self, messages: list[Msg], **_kwargs) -> str:
+        """Generate a comprehensive summary of the given messages.
 
-        This method uses the Summarizer to create a detailed summary of the
-        conversation history, which can be stored as persistent memory. Unlike
-        compaction, summarization aims to capture key information in a format
-        suitable for long-term storage and retrieval.
+        Uses file operation tools (read_file, write_file, edit_file) to support
+        the summarization process.
 
         Args:
-            messages (list[Msg]): The list of messages to summarize
+            messages: List of Msg objects to summarize
+            **_kwargs: Additional keyword arguments (ignored)
 
         Returns:
-            str: A generated summary of the messages, or empty string
-                on failure
-
-        Note:
-            - Summarization may use tools from the toolkit to enhance
-              the summary
-            - The summary is typically stored in the memory directory
-            - If summarization fails, an empty string is returned
+            str: Comprehensive summary of the messages
         """
-        self.update_config_params()
-        return await super().summary_memory(messages)
+        self.prepare_model_formatter()
+
+        agent_config = load_agent_config(self.agent_id)
+        token_counter = get_copaw_token_counter(agent_config)
+        user_tz = load_config().user_timezone or None
+
+        return await super().summary_memory(
+            messages=messages,
+            as_llm=self.chat_model,
+            as_llm_formatter=self.formatter,
+            as_token_counter=token_counter,
+            toolkit=self.summary_toolkit,
+            language=agent_config.language,
+            max_input_length=agent_config.running.max_input_length,
+            compact_ratio=agent_config.running.memory_compact_ratio,
+            timezone=user_tz,
+        )
+
+    async def memory_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        min_score: float = 0.1,
+    ) -> ToolResponse:
+        """Search through stored memories for relevant content.
+
+        Performs a search across the memory store using vector similarity
+        and/or full-text search depending on configuration.
+
+        Args:
+            query: The search query string
+            max_results: Maximum number of results to return (default: 5)
+            min_score: Minimum relevance score threshold (default: 0.1)
+
+        Returns:
+            ToolResponse containing the search results as TextBlock content,
+            or an error message if ReMe has not been started.
+        """
+        if not self._started:
+            return ToolResponse(
+                content=[
+                    TextBlock(
+                        type="text",
+                        text="ReMe is not started, report github issue!",
+                    ),
+                ],
+            )
+
+        return await super().memory_search(
+            query=query,
+            max_results=max_results,
+            min_score=min_score,
+        )
+
+    def get_in_memory_memory(self, **_kwargs):
+        """Retrieve in-memory memory content.
+
+        Args:
+            **_kwargs: Additional keyword arguments (passed to parent)
+
+        Returns:
+            The in-memory memory content with token counting support
+        """
+        agent_config = load_agent_config(self.agent_id)
+        token_counter = get_copaw_token_counter(agent_config)
+
+        return super().get_in_memory_memory(
+            as_token_counter=token_counter,
+        )

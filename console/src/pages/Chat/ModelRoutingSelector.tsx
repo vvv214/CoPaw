@@ -80,12 +80,13 @@ function decodeRoutingSlotValue(value: string): {
 }
 
 function isEligibleProvider(provider: ProviderInfo): boolean {
-  const hasModels = provider.models.length > 0;
+  const hasModels = provider.models.length + provider.extra_models.length > 0;
   if (!hasModels) return false;
-  if (provider.id === "ollama") return !!provider.current_base_url;
+  if (provider.id === "ollama") return !!provider.base_url;
   if (provider.is_local) return true;
-  if (provider.is_custom) return !!provider.current_base_url;
-  return !!provider.current_api_key;
+  if (provider.is_custom) return !!provider.base_url;
+  if (provider.require_api_key === false) return !!provider.base_url;
+  return !!provider.api_key;
 }
 
 function getModelName(
@@ -96,7 +97,8 @@ function getModelName(
     return "";
   }
   const provider = providers.find((item) => item.id === slot.provider_id);
-  const model = provider?.models.find((item) => item.id === slot.model);
+  const model = [...(provider?.models ?? []), ...(provider?.extra_models ?? [])]
+    .find((item) => item.id === slot.model);
   return model?.name ?? slot.model;
 }
 
@@ -116,9 +118,11 @@ function buildSlotOptions(
 ): SlotOption[] {
   return providers
     .filter(isEligibleProvider)
-    .filter((provider) => (kind === "local" ? provider.is_local : !provider.is_local))
+    .filter((provider) =>
+      kind === "local" ? provider.is_local : !provider.is_local,
+    )
     .flatMap((provider) =>
-      provider.models.map((model) => {
+      [...provider.models, ...provider.extra_models].map((model) => {
         const slot = { provider_id: provider.id, model: model.id };
         return {
           key: encodeRoutingSlotValue(kind, slot),
@@ -171,7 +175,7 @@ export default function ModelRoutingSelector() {
   const modelOptions = useMemo(
     () =>
       eligibleProviders.flatMap((provider) =>
-        provider.models.map((model) => ({
+        [...provider.models, ...provider.extra_models].map((model) => ({
           key: encodeModelValue({
             provider_id: provider.id,
             model: model.id,

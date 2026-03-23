@@ -4,10 +4,12 @@
 This module provides the main CoPawAgent class built on ReActAgent,
 with integrated tools, skills, and memory management.
 """
+
 import asyncio
 import logging
 import os
-from typing import Any, List, Literal, Optional, Type
+from pathlib import Path
+from typing import Any, List, Literal, Optional, Type, TYPE_CHECKING
 
 from agentscope.agent import ReActAgent
 from agentscope.mcp import HttpStatefulClient, StdIOStatefulClient
@@ -26,25 +28,31 @@ from .skills_manager import (
     get_working_skills_dir,
     list_available_skills,
 )
+from .tool_guard_mixin import ToolGuardMixin
 from .tools import (
     browser_use,
     desktop_screenshot,
     edit_file,
     execute_shell_command,
     get_current_time,
+    get_token_usage,
+    glob_search,
+    grep_search,
     read_file,
     send_file_to_user,
+    set_user_timezone,
+    view_image,
     write_file,
     create_memory_search_tool,
 )
 from .utils import process_file_and_media_blocks_in_message
-from ..agents.memory import MemoryManager
-from ..config import load_config
 from ..constant import (
-    MEMORY_COMPACT_KEEP_RECENT,
-    MEMORY_COMPACT_RATIO,
     WORKING_DIR,
 )
+from ..agents.memory import MemoryManager
+
+if TYPE_CHECKING:
+    from ..config.config import AgentProfileConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +60,7 @@ logger = logging.getLogger(__name__)
 NamesakeStrategy = Literal["override", "skip", "raise", "rename"]
 
 
-def normalize_reasoning_tool_choice(
-    tool_choice: Literal["auto", "none", "required"] | None,
-    has_tools: bool,
-) -> Literal["auto", "none", "required"] | None:
-    """Normalize tool_choice for reasoning to reduce provider variance."""
-    if tool_choice is None and has_tools:
-        return "auto"
-    return tool_choice
-
-
-class CoPawAgent(ReActAgent):
+class CoPawAgent(ToolGuardMixin, ReActAgent):
     """CoPaw Agent with integrated tools, skills, and memory management.
 
     This agent extends ReActAgent with:
@@ -71,44 +69,58 @@ class CoPawAgent(ReActAgent):
     - Memory management with auto-compaction
     - Bootstrap guidance for first-time setup
     - System command handling (/compact, /new, etc.)
+    - Tool-guard security interception (via ToolGuardMixin)
+
+    MRO note
+    ~~~~~~~~
+    ``ToolGuardMixin`` overrides ``_acting`` and ``_reasoning`` via
+    Python's MRO: CoPawAgent → ToolGuardMixin → ReActAgent.  If you
+    add a ``_acting`` or ``_reasoning`` override in this class, you
+    **must** call ``super()._acting(...)`` / ``super()._reasoning(...)``
+    so the guard interception remains active.
     """
 
     def __init__(
         self,
+        agent_config: "AgentProfileConfig",
         env_context: Optional[str] = None,
         enable_memory_manager: bool = True,
         mcp_clients: Optional[List[Any]] = None,
-        memory_manager: MemoryManager | None = None,
-        max_iters: int = 50,
-        max_input_length: int = 128 * 1024,  # 128K = 131072 tokens
+        memory_manager: "MemoryManager | None" = None,
+        request_context: Optional[dict[str, str]] = None,
         namesake_strategy: NamesakeStrategy = "skip",
+        workspace_dir: Path | None = None,
     ):
         """Initialize CoPawAgent.
 
         Args:
+            agent_config: Agent profile configuration containing all settings
+                including running config (max_iters, max_input_length,
+                memory_compact_threshold, etc.) and language setting.
             env_context: Optional environment context to prepend to
                 system prompt
             enable_memory_manager: Whether to enable memory manager
             mcp_clients: Optional list of MCP clients for tool
                 integration
             memory_manager: Optional memory manager instance
-            max_iters: Maximum number of reasoning-acting iterations
-                (default: 50)
-            max_input_length: Maximum input length in tokens for model
-                context window (default: 128K = 131072)
+            request_context: Optional request context with session_id,
+                user_id, channel, agent_id
             namesake_strategy: Strategy to handle namesake tool functions.
                 Options: "override", "skip", "raise", "rename"
                 (default: "skip")
+            workspace_dir: Workspace directory for reading prompt files
+                (if None, uses global WORKING_DIR)
         """
+        self._agent_config = agent_config
         self._env_context = env_context
-        self._max_input_length = max_input_length
+        self._request_context = dict(request_context or {})
         self._mcp_clients = mcp_clients or []
         self._namesake_strategy = namesake_strategy
+        self._workspace_dir = workspace_dir
 
-        # Memory compaction threshold: configurable ratio of max_input_length
-        self._memory_compact_threshold = int(
-            max_input_length * MEMORY_COMPACT_RATIO,
-        )
+        # Extract configuration from agent_config
+        running_config = agent_config.running
+        self._language = agent_config.language
 
         # Initialize toolkit with built-in tools
         toolkit = self._create_toolkit(namesake_strategy=namesake_strategy)
@@ -130,7 +142,7 @@ class CoPawAgent(ReActAgent):
             toolkit=toolkit,
             memory=InMemoryMemory(),
             formatter=formatter,
-            max_iters=max_iters,
+            max_iters=running_config.max_iters,
         )
 
         # Setup memory manager
@@ -167,53 +179,67 @@ class CoPawAgent(ReActAgent):
         """
         toolkit = Toolkit()
 
-        # Register built-in tools
-        toolkit.register_tool_function(
-            execute_shell_command,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            read_file,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            write_file,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            edit_file,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            browser_use,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            desktop_screenshot,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            send_file_to_user,
-            namesake_strategy=namesake_strategy,
-        )
-        toolkit.register_tool_function(
-            get_current_time,
-            namesake_strategy=namesake_strategy,
-        )
+        # Check which tools are enabled from agent config
+        enabled_tools = {}
+        try:
+            if hasattr(self._agent_config, "tools") and hasattr(
+                self._agent_config.tools,
+                "builtin_tools",
+            ):
+                builtin_tools = self._agent_config.tools.builtin_tools
+                enabled_tools = {
+                    name: tool.enabled for name, tool in builtin_tools.items()
+                }
+        except Exception as e:
+            logger.warning(
+                f"Failed to load agent tools config: {e}, "
+                "all tools will be disabled",
+            )
+
+        # Map of tool functions
+        tool_functions = {
+            "execute_shell_command": execute_shell_command,
+            "read_file": read_file,
+            "write_file": write_file,
+            "edit_file": edit_file,
+            "grep_search": grep_search,
+            "glob_search": glob_search,
+            "browser_use": browser_use,
+            "desktop_screenshot": desktop_screenshot,
+            "view_image": view_image,
+            "send_file_to_user": send_file_to_user,
+            "get_current_time": get_current_time,
+            "set_user_timezone": set_user_timezone,
+            "get_token_usage": get_token_usage,
+        }
+
+        # Register only enabled tools
+        for tool_name, tool_func in tool_functions.items():
+            # If tool not in config, enable by default (backward compatibility)
+            if enabled_tools.get(tool_name, True):
+                toolkit.register_tool_function(
+                    tool_func,
+                    namesake_strategy=namesake_strategy,
+                )
+                logger.debug("Registered tool: %s", tool_name)
+            else:
+                logger.debug("Skipped disabled tool: %s", tool_name)
 
         return toolkit
 
     def _register_skills(self, toolkit: Toolkit) -> None:
-        """Load and register skills from working directory.
+        """Load and register skills from workspace directory.
 
         Args:
             toolkit: Toolkit to register skills to
         """
-        # Check skills initialization
-        ensure_skills_initialized()
+        workspace_dir = self._workspace_dir or WORKING_DIR
 
-        working_skills_dir = get_working_skills_dir()
-        available_skills = list_available_skills()
+        # Check skills initialization
+        ensure_skills_initialized(workspace_dir)
+
+        working_skills_dir = get_working_skills_dir(workspace_dir)
+        available_skills = list_available_skills(workspace_dir)
 
         for skill_name in available_skills:
             skill_dir = working_skills_dir / skill_name
@@ -234,9 +260,29 @@ class CoPawAgent(ReActAgent):
         Returns:
             Complete system prompt string
         """
-        sys_prompt = build_system_prompt_from_working_dir()
+        # Get agent_id from request_context
+        agent_id = (
+            self._request_context.get("agent_id")
+            if self._request_context
+            else None
+        )
+
+        # Check if heartbeat is enabled in agent config
+        heartbeat_enabled = False
+        if (
+            hasattr(self._agent_config, "heartbeat")
+            and self._agent_config.heartbeat is not None
+        ):
+            heartbeat_enabled = self._agent_config.heartbeat.enabled
+
+        sys_prompt = build_system_prompt_from_working_dir(
+            working_dir=self._workspace_dir,
+            agent_id=agent_id,
+            heartbeat_enabled=heartbeat_enabled,
+        )
+        logger.debug("System prompt:\n%s", sys_prompt)
         if self._env_context is not None:
-            sys_prompt = self._env_context + "\n\n" + sys_prompt
+            sys_prompt = sys_prompt + "\n\n" + self._env_context
         return sys_prompt
 
     def _setup_memory_manager(
@@ -263,25 +309,9 @@ class CoPawAgent(ReActAgent):
         # Register memory_search tool if enabled and available
         if self._enable_memory_manager and self.memory_manager is not None:
             # update memory manager
+            self.memory = self.memory_manager.get_in_memory_memory()
             self.memory_manager.chat_model = self.model
             self.memory_manager.formatter = self.formatter
-            memory_toolkit = Toolkit()
-            memory_toolkit.register_tool_function(
-                read_file,
-                namesake_strategy=self._namesake_strategy,
-            )
-            memory_toolkit.register_tool_function(
-                write_file,
-                namesake_strategy=self._namesake_strategy,
-            )
-            memory_toolkit.register_tool_function(
-                edit_file,
-                namesake_strategy=self._namesake_strategy,
-            )
-            self.memory_manager.toolkit = memory_toolkit
-            self.memory_manager.update_config_params()
-
-            self.memory = self.memory_manager.get_in_memory_memory()
 
             # Register memory_search as a tool function
             self.toolkit.register_tool_function(
@@ -291,12 +321,15 @@ class CoPawAgent(ReActAgent):
             logger.debug("Registered memory_search tool")
 
     def _register_hooks(self) -> None:
-        """Register pre-reasoning hooks for bootstrap and memory compaction."""
+        """Register pre-reasoning and pre-acting hooks."""
         # Bootstrap hook - checks BOOTSTRAP.md on first interaction
-        config = load_config()
+        # Use workspace_dir if available, else fallback to WORKING_DIR
+        working_dir = (
+            self._workspace_dir if self._workspace_dir else WORKING_DIR
+        )
         bootstrap_hook = BootstrapHook(
-            working_dir=WORKING_DIR,
-            language=config.agents.language,
+            working_dir=working_dir,
+            language=self._language,
         )
         self.register_instance_hook(
             hook_type="pre_reasoning",
@@ -309,8 +342,6 @@ class CoPawAgent(ReActAgent):
         if self._enable_memory_manager and self.memory_manager is not None:
             memory_compact_hook = MemoryCompactionHook(
                 memory_manager=self.memory_manager,
-                memory_compact_threshold=self._memory_compact_threshold,
-                keep_recent=MEMORY_COMPACT_KEEP_RECENT,
             )
             self.register_instance_hook(
                 hook_type="pre_reasoning",
@@ -393,12 +424,12 @@ class CoPawAgent(ReActAgent):
                         client_name,
                     )
             except Exception as e:  # pylint: disable=broad-except
-                logger.exception(
-                    "Unexpected error registering MCP client '%s': %s",
+                logger.warning(
+                    "Failed to register MCP client '%s', skipping: %s",
                     client_name,
                     e,
+                    exc_info=True,
                 )
-                raise
 
     async def _recover_mcp_client(self, client: Any) -> Any | None:
         """Recover MCP client from broken session and return healthy client."""
@@ -500,28 +531,257 @@ class CoPawAgent(ReActAgent):
                 setattr(rebuilt_client, "_copaw_rebuild_info", rebuild_info)
                 return rebuilt_client
 
+            raw_headers = rebuild_info.get("headers") or {}
+            headers = (
+                {k: os.path.expandvars(v) for k, v in raw_headers.items()}
+                if raw_headers
+                else None
+            )
             rebuilt_client = HttpStatefulClient(
                 name=name,
                 transport=transport,
                 url=rebuild_info.get("url"),
-                headers=rebuild_info.get("headers"),
+                headers=headers,
             )
             setattr(rebuilt_client, "_copaw_rebuild_info", rebuild_info)
             return rebuilt_client
         except Exception:  # pylint: disable=broad-except
             return None
 
+    # ------------------------------------------------------------------
+    # Media-block fallback: strip unsupported media blocks (image, audio,
+    # video) from memory and retry when the model rejects them.
+    # ------------------------------------------------------------------
+
+    _MEDIA_BLOCK_TYPES = {"image", "audio", "video"}
+
     async def _reasoning(
         self,
         tool_choice: Literal["auto", "none", "required"] | None = None,
     ) -> Msg:
-        """Ensure a stable default tool-choice behavior across providers."""
-        tool_choice = normalize_reasoning_tool_choice(
-            tool_choice=tool_choice,
-            has_tools=bool(self.toolkit.get_json_schemas()),
+        """Override reasoning with media-block fallback.
+
+        If the model call fails with a bad-request error and memory
+        contains media blocks (image/audio/video), strip them all and
+        retry once.  Calls ``super()._reasoning`` to keep the
+        ToolGuardMixin interception active.
+        """
+        try:
+            return await super()._reasoning(tool_choice=tool_choice)
+        except Exception as e:
+            if not self._is_bad_request_or_media_error(e):
+                raise
+
+            n_stripped = self._strip_media_blocks_from_memory()
+            if n_stripped == 0:
+                raise
+
+            logger.warning(
+                "_reasoning failed (%s). "
+                "Stripped %d media block(s) from memory, retrying.",
+                e,
+                n_stripped,
+            )
+            return await super()._reasoning(tool_choice=tool_choice)
+
+    async def _summarizing(self) -> Msg:
+        """Override summarizing with media-block fallback and tool_use filter.
+
+        Some models (e.g. kimi-k2.5) generate tool_use blocks even when
+        no tools are provided, by mimicking patterns in conversation
+        history.  Since _summarizing has no acting stage, those blocks
+        would be displayed but never executed.
+
+        We set ``_in_summarizing`` so that ``print`` can strip tool_use
+        blocks from streaming chunks *before* they reach the frontend,
+        preventing the visual flash of phantom tool calls.
+        """
+        self._in_summarizing = True
+        try:
+            try:
+                msg = await super()._summarizing()
+            except Exception as e:
+                if not self._is_bad_request_or_media_error(e):
+                    raise
+
+                n_stripped = self._strip_media_blocks_from_memory()
+                if n_stripped == 0:
+                    raise
+
+                logger.warning(
+                    "_summarizing failed (%s). "
+                    "Stripped %d media block(s) from memory, retrying.",
+                    e,
+                    n_stripped,
+                )
+                msg = await super()._summarizing()
+        finally:
+            self._in_summarizing = False
+
+        return self._strip_tool_use_from_msg(msg)
+
+    async def print(
+        self,
+        msg: Msg,
+        last: bool = True,
+        speech: Any = None,
+    ) -> None:
+        """Filter tool_use blocks during _summarizing before they hit the
+        message queue, preventing the frontend from briefly rendering
+        phantom tool calls that will never be executed.
+
+        On the *final* streaming event (``last=True``), append the
+        round-end notice so users see it immediately instead of only
+        after a page refresh.  Intermediate events that become empty
+        after filtering are silently skipped to avoid blank UI flashes.
+        """
+        if getattr(self, "_in_summarizing", False) and isinstance(
+            msg.content,
+            list,
+        ):
+            original = msg.content
+            filtered = [
+                b
+                for b in original
+                if not (isinstance(b, dict) and b.get("type") == "tool_use")
+            ]
+            if len(filtered) != len(original):
+                if not filtered and not last:
+                    return
+                if last:
+                    filtered.append(
+                        {"type": "text", "text": self._ROUND_END_NOTICE},
+                    )
+                msg.content = filtered
+                try:
+                    return await super().print(msg, last, speech=speech)
+                finally:
+                    msg.content = original
+        return await super().print(msg, last, speech=speech)
+
+    _ROUND_END_NOTICE = (
+        "\n\n---\n"
+        "本轮调用已达最大次数，回复已终止，请继续输入。\n"
+        "Maximum iterations reached for this round. "
+        "Please send a new message to continue."
+    )
+
+    @staticmethod
+    def _strip_tool_use_from_msg(msg: Msg) -> Msg:
+        """Remove tool_use blocks from a message and append a user notice.
+
+        When _summarizing is called without tools, some models still
+        return tool_use blocks.  Those blocks can never be executed, so
+        strip them and append a bilingual notice telling the user this
+        round of calls has ended.
+        """
+        if not isinstance(msg.content, list):
+            return msg
+
+        filtered = [
+            block
+            for block in msg.content
+            if not (
+                isinstance(block, dict) and block.get("type") == "tool_use"
+            )
+        ]
+
+        if len(filtered) == len(msg.content):
+            return msg
+
+        n_removed = len(msg.content) - len(filtered)
+        logger.debug(
+            "Stripped %d tool_use block(s) from _summarizing response",
+            n_removed,
         )
 
-        return await super()._reasoning(tool_choice=tool_choice)
+        filtered.append({"type": "text", "text": CoPawAgent._ROUND_END_NOTICE})
+        msg.content = filtered
+        return msg
+
+    @staticmethod
+    def _is_bad_request_or_media_error(exc: Exception) -> bool:
+        """Return True for 400-class or media-related model errors.
+
+        Targets bad-request (400) errors because unsupported media
+        content typically causes request validation failures.  Keyword
+        matching provides an extra safety net for providers that use
+        non-standard status codes.
+        """
+        status = getattr(exc, "status_code", None)
+        if status == 400:
+            return True
+
+        error_str = str(exc).lower()
+        keywords = [
+            "image",
+            "audio",
+            "video",
+            "vision",
+            "multimodal",
+            "image_url",
+        ]
+        return any(kw in error_str for kw in keywords)
+
+    _MEDIA_PLACEHOLDER = (
+        "[Media content removed - model does not support this media type]"
+    )
+
+    def _strip_media_blocks_from_memory(self) -> int:
+        """Remove media blocks (image/audio/video) from all messages.
+
+        Also strips media blocks nested inside ToolResultBlock outputs.
+        Inserts placeholder text when stripping leaves content empty to
+        avoid malformed API requests.
+
+        Returns:
+            Total number of media blocks removed.
+        """
+        media_types = self._MEDIA_BLOCK_TYPES
+        total_stripped = 0
+
+        for msg, _marks in self.memory.content:
+            if not isinstance(msg.content, list):
+                continue
+
+            new_content = []
+            for block in msg.content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") in media_types
+                ):
+                    total_stripped += 1
+                    continue
+
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and isinstance(block.get("output"), list)
+                ):
+                    original_len = len(block["output"])
+                    block["output"] = [
+                        item
+                        for item in block["output"]
+                        if not (
+                            isinstance(item, dict)
+                            and item.get("type") in media_types
+                        )
+                    ]
+                    stripped_count = original_len - len(block["output"])
+                    total_stripped += stripped_count
+                    if stripped_count > 0 and not block["output"]:
+                        block["output"] = self._MEDIA_PLACEHOLDER
+
+                new_content.append(block)
+
+            if not new_content and total_stripped > 0:
+                new_content.append(
+                    {"type": "text", "text": self._MEDIA_PLACEHOLDER},
+                )
+
+            msg.content = new_content
+
+        return total_stripped
 
     async def reply(
         self,
@@ -537,6 +797,11 @@ class CoPawAgent(ReActAgent):
         Returns:
             Response message
         """
+        # Set workspace_dir in context for tool functions
+        from ..config.context import set_current_workspace_dir
+
+        set_current_workspace_dir(self._workspace_dir)
+
         # Process file and media blocks in messages
         if msg is not None:
             await process_file_and_media_blocks_in_message(msg)
@@ -554,6 +819,7 @@ class CoPawAgent(ReActAgent):
             return msg
 
         # Normal message processing
+        logger.info("CoPawAgent.reply: max_iters=%s", self.max_iters)
         return await super().reply(msg=msg, structured_model=structured_model)
 
     async def interrupt(self, msg: Msg | list[Msg] | None = None) -> None:

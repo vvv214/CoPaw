@@ -1,7 +1,7 @@
 ---
 name: cron
-description: 通过 copaw 命令管理定时任务 - 创建、查询、暂停、恢复、删除任务
-metadata: { "copaw": { "emoji": "⏰" } }
+description: 定时任务管理：copaw cron list 查询任务，copaw cron create 创建任务，copaw cron pause/resume 暂停/恢复，copaw cron delete 删除。用 -h 查看帮助 | Cron job management - copaw cron list to query jobs, copaw cron create to create jobs, copaw cron pause/resume to pause/resume, copaw cron delete to delete. Use -h for help
+metadata: { "builtin_skill_version": "1.0", "copaw": { "emoji": "⏰" } }
 ---
 
 # 定时任务管理
@@ -11,25 +11,30 @@ metadata: { "copaw": { "emoji": "⏰" } }
 ## 常用命令
 
 ```bash
-# 列出所有任务
+# 列出所有任务（默认操作 default agent）
 copaw cron list
 
+# 为特定 agent 列出任务
+copaw cron list --agent-id abc123
+
 # 查看任务详情
-copaw cron get <job_id>
+copaw cron get <job_id> --agent-id <agent_id>
 
 # 查看任务状态
-copaw cron state <job_id>
+copaw cron state <job_id> --agent-id <agent_id>
 
 # 删除任务
-copaw cron delete <job_id>
+copaw cron delete <job_id> --agent-id <agent_id>
 
 # 暂停/恢复任务
-copaw cron pause <job_id>
-copaw cron resume <job_id>
+copaw cron pause <job_id> --agent-id <agent_id>
+copaw cron resume <job_id> --agent-id <agent_id>
 
 # 立即执行一次
-copaw cron run <job_id>
+copaw cron run <job_id> --agent-id <agent_id>
 ```
+
+**重要**：所有命令都**必须**显式指定 `--agent-id` 参数。你的 agent_id 在系统提示的 Agent Identity 部分（`Your agent id is ...`）中已告知，直接使用该值。**不得省略**，否则任务会错误地创建到 default agent 的 workspace。
 
 ## 创建任务
 
@@ -40,7 +45,7 @@ copaw cron run <job_id>
 ### 快速创建
 
 ```bash
-# 每天 9:00 发送文本消息
+# 每天 9:00 发送文本消息（默认 agent）
 copaw cron create \
   --type text \
   --name "每日早安" \
@@ -50,8 +55,9 @@ copaw cron create \
   --target-session "CHANGEME" \
   --text "早上好！"
 
-# 每 2 小时向 Agent 提问
+# 为特定 agent 创建任务
 copaw cron create \
+  --agent-id abc123 \
   --type agent \
   --name "检查待办" \
   --cron "0 */2 * * *" \
@@ -67,10 +73,14 @@ copaw cron create \
 - `--type`：任务类型（text 或 agent）
 - `--name`：任务名称
 - `--cron`：cron 表达式（如 `"0 9 * * *"` 表示每天 9:00）
-- `--channel`：目标频道（imessage / discord / dingtalk / qq / console）
+- `--channel`：目标频道（console / feishu / dingtalk / discord / qq / telegram / imessage / matrix / mattermost 等）。用户未指定时，使用"当前的channel"的值
 - `--target-user`：用户标识
 - `--target-session`：会话标识
 - `--text`：消息内容（text 类型）或提问内容（agent 类型）
+
+### 可选参数
+
+- `--agent-id`：**必须指定**你自己的 agent ID（系统提示的 Agent Identity 部分可以找到）。默认值为 `default`，但**不得依赖默认值**。
 
 ### 从 JSON 创建（复杂配置）
 
@@ -94,3 +104,4 @@ copaw cron create -f job_spec.json
 - 暂停/删除/恢复前，用 `copaw cron list` 查找 job_id
 - 排查问题时，用 `copaw cron state <job_id>` 查看状态
 - 给用户的命令要完整、可直接复制执行
+- **必须**指定 `--agent-id` 参数，值从系统提示的 Agent Identity 部分读取
