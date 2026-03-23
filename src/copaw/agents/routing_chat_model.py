@@ -22,6 +22,35 @@ Route = Literal["local", "cloud"]
 LONG_PROMPT_CHAR_THRESHOLD = 6000
 LONG_CONVERSATION_MESSAGE_THRESHOLD = 24
 
+FRESHNESS_KEYWORDS = (
+    "latest",
+    "current price",
+    "current prices",
+    "today",
+    "this week",
+    "right now",
+    "as of ",
+    "stock price",
+    "stock prices",
+    "market price",
+    "market prices",
+    "breaking news",
+    "news today",
+    "weather",
+    "live score",
+    "schedule today",
+)
+
+STRICT_FORMAT_KEYWORDS = (
+    "json object",
+    "valid json",
+    "return json",
+    "return only json",
+    "respond with json",
+    "only json",
+    "output json",
+)
+
 
 @dataclass
 class RoutingDecision:
@@ -46,6 +75,8 @@ class RoutingPolicy:
         message_count: int = 0,
         has_non_text_user_content: bool = False,
         has_recent_tool_context: bool = False,
+        freshness_sensitive: bool = False,
+        strict_format_requested: bool = False,
     ) -> RoutingDecision:
         del channel, tools_available
 
@@ -53,6 +84,18 @@ class RoutingPolicy:
             return RoutingDecision(
                 route="cloud",
                 reasons=["structured_output"],
+            )
+
+        if strict_format_requested:
+            return RoutingDecision(
+                route="cloud",
+                reasons=["prompt:strict_format"],
+            )
+
+        if freshness_sensitive:
+            return RoutingDecision(
+                route="cloud",
+                reasons=["prompt:freshness_sensitive"],
             )
 
         if has_non_text_user_content:
@@ -171,6 +214,8 @@ class RoutingChatModel(ChatModelBase):
             and not isinstance(message.get("content"), str)
             for message in messages
         )
+        freshness_sensitive = _looks_freshness_sensitive(text)
+        strict_format_requested = _looks_strict_format_request(text)
         decision = self.policy.decide(
             text=text,
             tools_available=tools is not None,
@@ -179,6 +224,8 @@ class RoutingChatModel(ChatModelBase):
             message_count=len(messages),
             has_non_text_user_content=has_non_text_user_content,
             has_recent_tool_context=_has_recent_tool_context(messages),
+            freshness_sensitive=freshness_sensitive,
+            strict_format_requested=strict_format_requested,
         )
         endpoint, decision = self._load_endpoint_with_fallback(decision)
 
@@ -293,3 +340,13 @@ def _has_recent_tool_context(messages: list[dict]) -> bool:
         and previous_message.get("tool_calls")
         and last_message.get("role") == "tool"
     )
+
+
+def _looks_freshness_sensitive(text: str) -> bool:
+    normalized = text.lower()
+    return any(keyword in normalized for keyword in FRESHNESS_KEYWORDS)
+
+
+def _looks_strict_format_request(text: str) -> bool:
+    normalized = text.lower()
+    return any(keyword in normalized for keyword in STRICT_FORMAT_KEYWORDS)

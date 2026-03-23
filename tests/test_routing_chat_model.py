@@ -91,6 +91,50 @@ async def test_structured_output_forces_cloud_route() -> None:
 
 
 @pytest.mark.asyncio
+async def test_strict_format_prompt_forces_cloud_route() -> None:
+    model = RoutingChatModel(
+        local_endpoint=_endpoint("local-provider", "local-model"),
+        cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
+        routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
+    )
+
+    response = await model(
+        messages=[
+            {
+                "role": "user",
+                "content": "Return only a JSON object with keys project and status.",
+            },
+        ],
+        tools=[],
+    )
+
+    assert response.provider_id == "cloud-provider"
+    assert response.model_name == "cloud-model"
+
+
+@pytest.mark.asyncio
+async def test_freshness_sensitive_prompt_forces_cloud_route() -> None:
+    model = RoutingChatModel(
+        local_endpoint=_endpoint("local-provider", "local-model"),
+        cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
+        routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
+    )
+
+    response = await model(
+        messages=[
+            {
+                "role": "user",
+                "content": "Compare the latest prices of AMD and NVDA this week.",
+            },
+        ],
+        tools=[],
+    )
+
+    assert response.provider_id == "cloud-provider"
+    assert response.model_name == "cloud-model"
+
+
+@pytest.mark.asyncio
 async def test_recent_tool_context_forces_cloud_route() -> None:
     model = RoutingChatModel(
         local_endpoint=_endpoint("local-provider", "local-model"),
