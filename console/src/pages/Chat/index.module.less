@@ -39,3 +39,92 @@
   opacity: 0.3 !important;
   cursor: not-allowed !important;
 }
+
+.routingTrigger {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(89, 92, 246, 0.14);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.routingTrigger:hover,
+.routingTrigger:focus {
+  border-color: rgba(89, 92, 246, 0.28);
+  background: #fff !important;
+}
+
+.routingTriggerInner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.routingTriggerLead {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.routingTriggerIcon {
+  color: #5b5ff6;
+  font-size: 13px;
+}
+
+.routingTriggerLabel {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #2f325c;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.routingTriggerBadge {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #5b5ff6;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.routingTriggerCaret {
+  color: rgba(47, 50, 92, 0.6);
+  font-size: 11px;
+}
+
+.routingMenu :global(.ant-dropdown-menu),
+.routingMenu :global(.copaw-dropdown-menu) {
+  min-width: 300px;
+  max-height: 360px;
+  overflow: auto;
+  padding: 6px;
+  border-radius: 16px;
+  border: 1px solid rgba(89, 92, 246, 0.12);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.12);
+}
+
+.routingMenu :global(.ant-dropdown-menu-item-group-title),
+.routingMenu :global(.copaw-dropdown-menu-item-group-title) {
+  padding: 6px 10px 4px;
+  color: rgba(47, 50, 92, 0.58);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.routingMenu :global(.ant-dropdown-menu-item),
+.routingMenu :global(.copaw-dropdown-menu-item) {
+  margin: 2px 0;
+  border-radius: 10px;
+  font-size: 13px;
+}

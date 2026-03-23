@@ -1,7 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { SaveOutlined } from "@ant-design/icons";
 import { Select, Button, message } from "@agentscope-ai/design";
-import type { ModelSlotRequest } from "../../../../../api/types";
+import type {
+  LLMRoutingConfig,
+  ModelSlotRequest,
+} from "../../../../../api/types";
 import api from "../../../../../api";
 import { useTranslation } from "react-i18next";
 import styles from "../../index.module.less";
@@ -23,12 +26,20 @@ interface ModelsSectionProps {
       model?: string;
     };
   } | null;
+  routingConfig: LLMRoutingConfig | null;
   onSaved: () => void;
+}
+
+function hasConfiguredSlot(
+  slot?: { provider_id?: string; model?: string } | null,
+): slot is { provider_id: string; model: string } {
+  return Boolean(slot?.provider_id && slot?.model);
 }
 
 export function ModelsSection({
   providers,
   activeModels,
+  routingConfig,
   onSaved,
 }: ModelsSectionProps) {
   const { t } = useTranslation();
@@ -42,6 +53,19 @@ export function ModelsSection({
   const [dirty, setDirty] = useState(false);
 
   const currentSlot = activeModels?.active_llm;
+  const preferredRoutingSlot = useMemo(() => {
+    if (!routingConfig?.enabled) {
+      return null;
+    }
+    const preferredSlot =
+      routingConfig.mode === "cloud_first"
+        ? routingConfig.cloud
+        : routingConfig.local;
+    if (hasConfiguredSlot(preferredSlot)) {
+      return preferredSlot;
+    }
+    return hasConfiguredSlot(currentSlot) ? currentSlot : null;
+  }, [currentSlot, routingConfig]);
 
   const eligible = useMemo(
     () =>
@@ -57,12 +81,18 @@ export function ModelsSection({
   );
 
   useEffect(() => {
-    if (currentSlot) {
-      setSelectedProviderId(currentSlot.provider_id || undefined);
-      setSelectedModel(currentSlot.model || undefined);
+    const visibleSlot = routingConfig?.enabled ? preferredRoutingSlot : currentSlot;
+    if (visibleSlot) {
+      setSelectedProviderId(visibleSlot.provider_id || undefined);
+      setSelectedModel(visibleSlot.model || undefined);
     }
     setDirty(false);
-  }, [currentSlot?.provider_id, currentSlot?.model]);
+  }, [
+    currentSlot?.model,
+    currentSlot?.provider_id,
+    preferredRoutingSlot,
+    routingConfig?.enabled,
+  ]);
 
   const chosenProvider = providers.find((p) => p.id === selectedProviderId);
   const modelOptions = chosenProvider?.models ?? [];
@@ -89,7 +119,16 @@ export function ModelsSection({
 
     setSaving(true);
     try {
-      await api.setActiveLlm(body);
+      const requests: Array<Promise<unknown>> = [api.setActiveLlm(body)];
+      if (routingConfig?.enabled) {
+        requests.push(
+          api.setLlmRoutingConfig({
+            ...routingConfig,
+            enabled: false,
+          }),
+        );
+      }
+      await Promise.all(requests);
       message.success(t("models.llmModelUpdated"));
       setDirty(false);
       onSaved();
@@ -106,7 +145,11 @@ export function ModelsSection({
     currentSlot &&
     currentSlot.provider_id === selectedProviderId &&
     currentSlot.model === selectedModel;
-  const canSave = dirty && !!selectedProviderId && !!selectedModel;
+  const canSave =
+    !!selectedProviderId &&
+    !!selectedModel &&
+    (dirty || Boolean(routingConfig?.enabled));
+  const showSaved = isActive && !routingConfig?.enabled;
 
   return (
     <div className={styles.slotSection}>
@@ -171,7 +214,7 @@ export function ModelsSection({
             block
             icon={<SaveOutlined />}
           >
-            {isActive ? t("models.saved") : t("models.save")}
+            {showSaved ? t("models.saved") : t("models.save")}
           </Button>
         </div>
       </div>

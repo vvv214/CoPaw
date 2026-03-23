@@ -473,6 +473,25 @@
     "configureNow": "Настроить модель",
     "modelNotConfigured": "Перед использованием чата настройте модель в разделе «Настройки»"
   },
+  "chatModelSelector": {
+    "placeholder": "Routing или модель",
+    "triggerRouting": "Routing",
+    "routingGroup": "Routing",
+    "modelsGroup": "Модели",
+    "localModel": "Локальная модель",
+    "cloudModel": "Облачная модель",
+    "routingLocalFirst": "Routing: сначала локальная",
+    "routingCloudFirst": "Routing: сначала облачная",
+    "localFirst": "Сначала локальная",
+    "cloudFirst": "Сначала облачная",
+    "routingLocalFirstEnabled": "Routing включён: сначала локальная",
+    "routingCloudFirstEnabled": "Routing включён: сначала облачная",
+    "routingModelUpdated": "Модель для routing обновлена",
+    "routingDisabled": "Routing отключён; активная модель обновлена",
+    "configureModelFirst": "Сначала выберите активную модель.",
+    "configureRoutingFirst": "Для routing нужна одна локальная и одна облачная модель.",
+    "updateFailed": "Не удалось обновить выбор модели в чате"
+  },
   "header": {
     "changelog": "Список изменений",
     "docs": "Документация",

@@ -306,18 +306,28 @@ def _create_routing_endpoint(
 ) -> "RoutingEndpoint":
     from .routing_chat_model import RoutingEndpoint
 
-    model, chat_model_class = _create_model_instance_for_provider(
-        llm_cfg,
-        provider_id,
-        providers_data=providers_data,
-    )
-    formatter = _create_formatter_instance(chat_model_class)
+    if llm_cfg.is_local:
+        chat_model_class = OpenAIChatModel
+    else:
+        chat_model_class = _get_chat_model_class_for_provider(
+            provider_id,
+            providers_data=providers_data,
+        )
+
+    def _load_endpoint() -> tuple[ChatModelBase, FormatterBase]:
+        model, loaded_chat_model_class = _create_model_instance_for_provider(
+            llm_cfg,
+            provider_id,
+            providers_data=providers_data,
+        )
+        formatter = _create_formatter_instance(loaded_chat_model_class)
+        return model, formatter
+
     return RoutingEndpoint(
         provider_id=provider_id,
         model_name=llm_cfg.model,
-        model=model,
-        formatter=formatter,
         formatter_family=_get_formatter_for_chat_model(chat_model_class),
+        loader=_load_endpoint,
     )
 
 
@@ -357,7 +367,7 @@ def _create_routing_model_and_formatter(
         cloud_endpoint=cloud_endpoint,
         routing_cfg=routing_cfg,
     )
-    return model, local_endpoint.formatter
+    return model, _create_formatter_from_family(local_endpoint.formatter_family)
 
 
 def create_model_and_formatter(
@@ -593,6 +603,13 @@ def _create_formatter_instance(
         Formatter instance with file block support
     """
     base_formatter_class = _get_formatter_for_chat_model(chat_model_class)
+    return _create_formatter_from_family(base_formatter_class)
+
+
+def _create_formatter_from_family(
+    base_formatter_class: Type[FormatterBase],
+) -> FormatterBase:
+    """Create a formatter instance from a formatter family."""
     formatter_class = _create_file_block_support_formatter(
         base_formatter_class,
     )

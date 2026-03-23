@@ -473,6 +473,25 @@
     "configureNow": "Configure Model",
     "modelNotConfigured": "Please configure a model in Settings before using chat"
   },
+  "chatModelSelector": {
+    "placeholder": "Routing or model",
+    "triggerRouting": "Routing",
+    "routingGroup": "Routing",
+    "modelsGroup": "Models",
+    "localModel": "Local model",
+    "cloudModel": "Cloud model",
+    "routingLocalFirst": "Routing: Local first",
+    "routingCloudFirst": "Routing: Cloud first",
+    "localFirst": "Local first",
+    "cloudFirst": "Cloud first",
+    "routingLocalFirstEnabled": "Routing enabled: local first",
+    "routingCloudFirstEnabled": "Routing enabled: cloud first",
+    "routingModelUpdated": "Routing model updated",
+    "routingDisabled": "Routing disabled; active model updated",
+    "configureModelFirst": "Select an active model first.",
+    "configureRoutingFirst": "Routing needs one local model and one cloud model.",
+    "updateFailed": "Failed to update chat model selection"
+  },
   "header": {
     "changelog": "Changelog",
     "docs": "Doc",

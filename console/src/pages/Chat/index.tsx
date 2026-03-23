@@ -8,11 +8,13 @@ import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import sessionApi from "./sessionApi";
+import ModelRoutingSelector from "./ModelRoutingSelector";
 import { useLocalStorageState } from "ahooks";
 import defaultConfig, { DefaultConfig } from "./OptionsPanel/defaultConfig";
 import Weather from "./Weather";
 import { getApiUrl, getApiToken } from "../../api/config";
 import { providerApi } from "../../api/modules/provider";
+import type { ActiveModelsInfo, LLMRoutingConfig, ModelSlotConfig } from "../../api/types/provider";
 import "./index.module.less";
 
 interface CustomWindow extends Window {
@@ -24,6 +26,29 @@ interface CustomWindow extends Window {
 declare const window: CustomWindow;
 
 type OptionsConfig = DefaultConfig;
+const LOCAL_PROVIDER_IDS = new Set(["llamacpp", "mlx"]);
+
+function hasConfiguredSlot(slot?: ModelSlotConfig | null): boolean {
+  return Boolean(slot?.provider_id && slot?.model);
+}
+
+function canSendRequest(
+  activeModels: ActiveModelsInfo | null,
+  routingConfig: LLMRoutingConfig | null,
+): boolean {
+  const activeProviderId = activeModels?.active_llm?.provider_id ?? "";
+  const activeModelId = activeModels?.active_llm?.model ?? "";
+  const hasActive = Boolean(activeProviderId && activeModelId);
+  if (!routingConfig?.enabled) {
+    return hasActive;
+  }
+  const hasLocal = hasConfiguredSlot(routingConfig.local);
+  const activeCanBeCloudFallback =
+    hasActive && !LOCAL_PROVIDER_IDS.has(activeProviderId);
+  const hasCloud =
+    hasConfiguredSlot(routingConfig.cloud) || activeCanBeCloudFallback;
+  return hasLocal && hasCloud;
+}
 
 export default function ChatPage() {
   const { t } = useTranslation();
@@ -67,12 +92,12 @@ export default function ChatPage() {
       signal?: AbortSignal;
     }): Promise<Response> => {
       try {
-        const activeModels = await providerApi.getActiveModels();
+        const [activeModels, routingConfig] = await Promise.all([
+          providerApi.getActiveModels(),
+          providerApi.getLlmRoutingConfig(),
+        ]);
 
-        if (
-          !activeModels?.active_llm?.provider_id ||
-          !activeModels?.active_llm?.model
-        ) {
+        if (!canSendRequest(activeModels, routingConfig)) {
           return handleModelError();
         }
       } catch (error) {
@@ -124,6 +149,7 @@ export default function ChatPage() {
       },
       theme: {
         ...optionsConfig.theme,
+        rightHeader: <ModelRoutingSelector />,
       },
       api: {
         ...optionsConfig.api,
