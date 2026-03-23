@@ -6,10 +6,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Modal, Result, Tooltip, message } from "antd";
 import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons";
-import {
-  SparkAttachmentLine,
-  SparkCopyLine,
-} from "@agentscope-ai/icons";
+import { SparkAttachmentLine, SparkCopyLine } from "@agentscope-ai/icons";
 import { IconButton } from "@agentscope-ai/design";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";

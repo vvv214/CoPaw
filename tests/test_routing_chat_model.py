@@ -102,7 +102,10 @@ async def test_strict_format_prompt_forces_cloud_route() -> None:
         messages=[
             {
                 "role": "user",
-                "content": "Return only a JSON object with keys project and status.",
+                "content": (
+                    "Return only a JSON object with keys "
+                    "project and status."
+                ),
             },
         ],
         tools=[],
@@ -124,7 +127,9 @@ async def test_freshness_sensitive_prompt_forces_cloud_route() -> None:
         messages=[
             {
                 "role": "user",
-                "content": "Compare the latest prices of AMD and NVDA this week.",
+                "content": (
+                    "Compare the latest prices of AMD " "and NVDA this week."
+                ),
             },
         ],
         tools=[],

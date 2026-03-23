@@ -84,7 +84,9 @@ export function ModelsSection({
   );
 
   useEffect(() => {
-    const visibleSlot = routingConfig?.enabled ? preferredRoutingSlot : currentSlot;
+    const visibleSlot = routingConfig?.enabled
+      ? preferredRoutingSlot
+      : currentSlot;
     if (visibleSlot) {
       setSelectedProviderId(visibleSlot.provider_id || undefined);
       setSelectedModel(visibleSlot.model || undefined);

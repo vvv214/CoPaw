@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 from agentscope.model import OpenAIChatModel
 
-import copaw.agents.model_factory as model_factory
 import copaw.config.config as config_module
 import copaw.config.utils as config_utils
+from copaw.agents import model_factory
 from copaw.agents.routing_chat_model import RoutingChatModel
 from copaw.config.config import AgentsLLMRoutingConfig
 from copaw.providers.models import ModelSlotConfig
@@ -152,7 +152,7 @@ def _patch_common_mocks(
     return created
 
 
-def test_create_model_and_formatter_uses_routing_with_agent_active_cloud_fallback(
+def test_create_model_and_formatter_uses_agent_active_cloud_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     routing_cfg = AgentsLLMRoutingConfig(
@@ -188,7 +188,7 @@ def test_create_model_and_formatter_uses_routing_with_agent_active_cloud_fallbac
     assert model.cloud_endpoint.provider_id == "openai"
     assert model.cloud_endpoint.model_name == "gpt-5"
     assert formatter.formatter_for == "OpenAIChatFormatter"
-    assert created == []
+    assert not created
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ async def test_create_model_and_formatter_loads_only_selected_cloud_route(
     model, _ = model_factory.create_model_and_formatter(agent_id="agent-1")
 
     assert isinstance(model, RoutingChatModel)
-    assert created == []
+    assert not created
 
     response = await model(
         messages=[{"role": "user", "content": "hi"}],
@@ -263,7 +263,7 @@ async def test_create_model_and_formatter_loads_local_route_on_first_use(
     model, _ = model_factory.create_model_and_formatter(agent_id="agent-1")
 
     assert isinstance(model, RoutingChatModel)
-    assert created == []
+    assert not created
 
     response = await model(
         messages=[{"role": "user", "content": "hi"}],
@@ -307,10 +307,10 @@ def test_create_model_and_formatter_uses_explicit_cloud_slot(
     assert model.local_endpoint.provider_id == "mlx"
     assert model.cloud_endpoint.provider_id == "aliyun-codingplan"
     assert model.routing_cfg.mode == "cloud_first"
-    assert created == []
+    assert not created
 
 
-def test_create_model_and_formatter_uses_manager_active_model_when_routing_disabled(
+def test_create_model_and_formatter_uses_active_model_when_routing_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     routing_cfg = AgentsLLMRoutingConfig(enabled=False)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Probe an OpenAI-compatible chat endpoint with a small case suite."""
 
 from __future__ import annotations
@@ -9,17 +10,34 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True, help="Endpoint base URL, e.g. http://127.0.0.1:8102/v1")
-    parser.add_argument("--api-key", default="", help="Bearer token if required by the endpoint")
+    parser.add_argument(
+        "--base-url",
+        required=True,
+        help="Endpoint base URL, e.g. http://127.0.0.1:8102/v1",
+    )
+    parser.add_argument(
+        "--api-key",
+        default="",
+        help="Bearer token if required by the endpoint",
+    )
     parser.add_argument("--model", required=True, help="Served model name")
-    parser.add_argument("--cases", required=True, help="JSONL file with probe cases")
-    parser.add_argument("--output", default="", help="Optional JSONL output path")
+    parser.add_argument(
+        "--cases",
+        required=True,
+        help="JSONL file with probe cases",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Optional JSONL output path",
+    )
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser.parse_args()
@@ -36,7 +54,11 @@ def load_cases(path: str) -> list[dict[str, Any]]:
     return cases
 
 
-def build_request(case: dict[str, Any], model: str, temperature: float) -> dict[str, Any]:
+def build_request(
+    case: dict[str, Any],
+    model: str,
+    temperature: float,
+) -> dict[str, Any]:
     return {
         "model": model,
         "messages": case["messages"],
@@ -45,12 +67,22 @@ def build_request(case: dict[str, Any], model: str, temperature: float) -> dict[
     }
 
 
-def post_json(url: str, payload: dict[str, Any], api_key: str, timeout: float) -> dict[str, Any]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    api_key: str,
+    timeout: float,
+) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -76,14 +108,13 @@ def main() -> int:
     args = parse_args()
     cases = load_cases(args.cases)
     output_path = Path(args.output) if args.output else None
-    output_handle = (
+    endpoint = args.base_url.rstrip("/") + "/chat/completions"
+    context = (
         output_path.open("w", encoding="utf-8")
         if output_path is not None
-        else None
+        else nullcontext(None)
     )
-    endpoint = args.base_url.rstrip("/") + "/chat/completions"
-
-    try:
+    with context as output_handle:
         for case in cases:
             payload = build_request(case, args.model, args.temperature)
             started_at = time.perf_counter()
@@ -107,7 +138,9 @@ def main() -> int:
                         "latency_s": round(elapsed, 3),
                         "usage": response.get("usage"),
                         "finish_reason": (
-                            (response.get("choices") or [{}])[0].get("finish_reason")
+                            (response.get("choices") or [{}])[0].get(
+                                "finish_reason",
+                            )
                         ),
                         "response_text": summarize_response(response),
                     },
@@ -119,10 +152,15 @@ def main() -> int:
                         "ok": False,
                         "latency_s": round(elapsed, 3),
                         "error": f"HTTP {exc.code}",
-                        "error_body": exc.read().decode("utf-8", errors="replace"),
+                        "error_body": exc.read().decode(
+                            "utf-8",
+                            errors="replace",
+                        ),
                     },
                 )
-            except Exception as exc:  # pragma: no cover - probe script guardrail
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - probe script guardrail
                 elapsed = time.perf_counter() - started_at
                 record.update(
                     {
@@ -137,9 +175,6 @@ def main() -> int:
             if output_handle is not None:
                 output_handle.write(line + "\n")
                 output_handle.flush()
-    finally:
-        if output_handle is not None:
-            output_handle.close()
 
     return 0
 

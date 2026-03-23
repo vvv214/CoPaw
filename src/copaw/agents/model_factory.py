@@ -64,9 +64,16 @@ def _create_file_block_support_formatter(
 ) -> Type[FormatterBase]:
     """Create a formatter class with file block support."""
 
+    # This factory builds a compatibility wrapper class in one place so the
+    # formatter behavior stays easy to trace.
+    # pylint: disable=too-many-statements
     class FileBlockSupportFormatter(base_formatter_class):
         """Formatter with file block support for tool results."""
 
+        # This method consolidates multiple compatibility passes over the
+        # formatted message stream, so a local pylint suppression is clearer
+        # than splitting it into tightly coupled fragments.
+        # pylint: disable=too-many-branches,too-many-statements
         async def _format(self, msgs):
             msgs = _sanitize_tool_messages(msgs)
 
@@ -142,9 +149,9 @@ def _create_file_block_support_formatter(
                 else:
                     for index, out_msg in enumerate(out_assistant):
                         if aligned_reasoning[index]:
-                            out_msg["reasoning_content"] = (
-                                aligned_reasoning[index]
-                            )
+                            out_msg["reasoning_content"] = aligned_reasoning[
+                                index
+                            ]
 
             return _strip_top_level_message_name(messages)
 
@@ -185,10 +192,11 @@ def _create_file_block_support_formatter(
                         )
                         multimodal_data.append((file_path, block))
                     else:
-                        text, data = (
-                            base_formatter_class.convert_tool_result_to_string(
-                                [block],
-                            )
+                        (
+                            text,
+                            data,
+                        ) = base_formatter_class.convert_tool_result_to_string(
+                            [block],
                         )
                         textual_output.append(text)
                         multimodal_data.extend(data)
@@ -248,9 +256,12 @@ def _create_model_instance_for_provider(
         )
         return model, OpenAIChatModel
 
-    return provider.get_chat_model_instance(
-        model_slot.model,
-    ), provider.get_chat_model_cls()
+    return (
+        provider.get_chat_model_instance(
+            model_slot.model,
+        ),
+        provider.get_chat_model_cls(),
+    )
 
 
 def _create_routing_endpoint(
@@ -322,13 +333,79 @@ def _create_routing_model_and_formatter(
     )
 
 
+def _load_agent_selection(
+    agent_id: Optional[str],
+) -> tuple[ModelSlotConfig | None, Any]:
+    from ..config.config import load_agent_config
+
+    if not agent_id:
+        return None, None
+
+    try:
+        agent_config = load_agent_config(agent_id)
+    except Exception:
+        return None, None
+
+    return agent_config.active_model, agent_config.llm_routing
+
+
+def _resolve_cloud_slot(
+    routing_cfg: Any,
+    model_slot: ModelSlotConfig | None,
+    manager: ProviderManager,
+) -> ModelSlotConfig | None:
+    if _has_configured_slot(routing_cfg.cloud):
+        return routing_cfg.cloud
+    if _has_configured_slot(model_slot):
+        return model_slot
+    return manager.get_active_model()
+
+
+def _create_active_model_and_formatter(
+    model_slot: ModelSlotConfig,
+    *,
+    manager: ProviderManager,
+) -> Tuple[ChatModelBase, FormatterBase]:
+    provider_id = model_slot.provider_id
+    model, chat_model_class = _create_model_instance_for_provider(
+        model_slot,
+        manager=manager,
+    )
+    formatter = _create_formatter_instance(chat_model_class)
+    wrapped_model = TokenRecordingModelWrapper(provider_id, model)
+    wrapped_model = RetryChatModel(wrapped_model)
+    return wrapped_model, formatter
+
+
+def _create_default_model_and_formatter(
+    *,
+    manager: ProviderManager,
+) -> Tuple[ChatModelBase, FormatterBase]:
+    model = ProviderManager.get_active_chat_model()
+    active_model = manager.get_active_model()
+    if active_model is None:
+        raise ValueError("No active model configured.")
+
+    provider_id = active_model.provider_id
+    provider = manager.get_provider(provider_id)
+    if provider is None:
+        raise ValueError(f"Active provider '{provider_id}' not found.")
+
+    chat_model_class = (
+        OpenAIChatModel if provider.is_local else provider.get_chat_model_cls()
+    )
+    formatter = _create_formatter_instance(chat_model_class)
+    wrapped_model = TokenRecordingModelWrapper(provider_id, model)
+    wrapped_model = RetryChatModel(wrapped_model)
+    return wrapped_model, formatter
+
+
 def create_model_and_formatter(
     agent_id: Optional[str] = None,
 ) -> Tuple[ChatModelBase, FormatterBase]:
     """Factory method to create model and formatter instances."""
 
     from ..app.agent_context import get_current_agent_id
-    from ..config.config import load_agent_config
     from ..config.utils import load_config
 
     if agent_id is None:
@@ -338,33 +415,23 @@ def create_model_and_formatter(
             pass
 
     manager = ProviderManager.get_instance()
-    model_slot = None
-    routing_cfg = None
-
-    if agent_id:
-        try:
-            agent_config = load_agent_config(agent_id)
-            model_slot = agent_config.active_model
-            routing_cfg = agent_config.llm_routing
-        except Exception:
-            pass
+    model_slot, routing_cfg = _load_agent_selection(agent_id)
 
     if routing_cfg is None:
         routing_cfg = load_config().agents.llm_routing
 
     if _has_configured_slot(routing_cfg.local):
-        cloud_slot = (
-            routing_cfg.cloud
-            if _has_configured_slot(routing_cfg.cloud)
-            else (
-                model_slot
-                if _has_configured_slot(model_slot)
-                else manager.get_active_model()
-            )
+        local_slot = routing_cfg.local
+        assert local_slot is not None
+        cloud_slot = _resolve_cloud_slot(
+            routing_cfg,
+            model_slot,
+            manager,
         )
         if routing_cfg.enabled and _has_configured_slot(cloud_slot):
+            assert cloud_slot is not None
             routed_model = _create_routing_model_and_formatter(
-                routing_cfg.local,
+                local_slot,
                 cloud_slot,
                 routing_cfg,
                 manager=manager,
@@ -373,30 +440,13 @@ def create_model_and_formatter(
                 return routed_model
 
     if _has_configured_slot(model_slot):
-        provider_id = model_slot.provider_id
-        model, chat_model_class = _create_model_instance_for_provider(
+        assert model_slot is not None
+        return _create_active_model_and_formatter(
             model_slot,
             manager=manager,
         )
-    else:
-        model = ProviderManager.get_active_chat_model()
-        active_model = manager.get_active_model()
-        if active_model is None:
-            raise ValueError("No active model configured.")
-        provider_id = active_model.provider_id
-        provider = manager.get_provider(provider_id)
-        if provider is None:
-            raise ValueError(f"Active provider '{provider_id}' not found.")
-        chat_model_class = (
-            OpenAIChatModel
-            if provider.is_local
-            else provider.get_chat_model_cls()
-        )
 
-    formatter = _create_formatter_instance(chat_model_class)
-    wrapped_model = TokenRecordingModelWrapper(provider_id, model)
-    wrapped_model = RetryChatModel(wrapped_model)
-    return wrapped_model, formatter
+    return _create_default_model_and_formatter(manager=manager)
 
 
 def _create_formatter_instance(

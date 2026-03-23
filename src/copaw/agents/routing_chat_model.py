@@ -80,61 +80,28 @@ class RoutingPolicy:
     ) -> RoutingDecision:
         del channel, tools_available
 
-        if structured_output_requested:
-            return RoutingDecision(
-                route="cloud",
-                reasons=["structured_output"],
-            )
-
-        if strict_format_requested:
-            return RoutingDecision(
-                route="cloud",
-                reasons=["prompt:strict_format"],
-            )
-
-        if freshness_sensitive:
-            return RoutingDecision(
-                route="cloud",
-                reasons=["prompt:freshness_sensitive"],
-            )
-
-        if has_non_text_user_content:
-            return RoutingDecision(
-                route="cloud",
-                reasons=["user_content:non_text"],
-            )
-
-        if tool_choice == "required":
-            return RoutingDecision(
-                route="cloud",
-                reasons=["tool_choice:required"],
-            )
-
-        if has_recent_tool_context:
-            return RoutingDecision(
-                route="cloud",
-                reasons=["recent_tool_context"],
-            )
-
-        if len(text) >= LONG_PROMPT_CHAR_THRESHOLD:
-            return RoutingDecision(
-                route="cloud",
-                reasons=[f"prompt_chars>={LONG_PROMPT_CHAR_THRESHOLD}"],
-            )
-
-        if message_count >= LONG_CONVERSATION_MESSAGE_THRESHOLD:
-            return RoutingDecision(
-                route="cloud",
-                reasons=[
-                    f"message_count>={LONG_CONVERSATION_MESSAGE_THRESHOLD}",
-                ],
-            )
+        cloud_reasons: list[tuple[bool, str]] = [
+            (structured_output_requested, "structured_output"),
+            (strict_format_requested, "prompt:strict_format"),
+            (freshness_sensitive, "prompt:freshness_sensitive"),
+            (has_non_text_user_content, "user_content:non_text"),
+            (tool_choice == "required", "tool_choice:required"),
+            (has_recent_tool_context, "recent_tool_context"),
+            (
+                len(text) >= LONG_PROMPT_CHAR_THRESHOLD,
+                f"prompt_chars>={LONG_PROMPT_CHAR_THRESHOLD}",
+            ),
+            (
+                message_count >= LONG_CONVERSATION_MESSAGE_THRESHOLD,
+                f"message_count>={LONG_CONVERSATION_MESSAGE_THRESHOLD}",
+            ),
+        ]
+        for condition, reason in cloud_reasons:
+            if condition:
+                return _cloud_decision(reason)
 
         if getattr(self.cfg, "mode", "local_first") == "cloud_first":
-            return RoutingDecision(
-                route="cloud",
-                reasons=["mode:cloud_first"],
-            )
+            return _cloud_decision("mode:cloud_first")
 
         return RoutingDecision(
             route="local",
@@ -270,7 +237,7 @@ class RoutingChatModel(ChatModelBase):
         return self.local_endpoint if route == "local" else self.cloud_endpoint
 
     def _secondary_endpoint(self, route: Route) -> RoutingEndpoint | None:
-        fallback_route = "cloud" if route == "local" else "local"
+        fallback_route: Route = "cloud" if route == "local" else "local"
         fallback = self._primary_endpoint(fallback_route)
         primary = self._primary_endpoint(route)
         if (
@@ -286,7 +253,7 @@ class RoutingChatModel(ChatModelBase):
     ) -> tuple[RoutingEndpoint, RoutingDecision]:
         endpoint = self._primary_endpoint(decision.route)
         try:
-            endpoint.model
+            _ = endpoint.model
             return endpoint, decision
         except Exception:
             fallback = self._secondary_endpoint(decision.route)
@@ -304,7 +271,7 @@ class RoutingChatModel(ChatModelBase):
                 fallback.model_name,
                 exc_info=True,
             )
-            fallback.model
+            _ = fallback.model
             return fallback, RoutingDecision(
                 route=fallback_route,
                 reasons=[
@@ -312,6 +279,10 @@ class RoutingChatModel(ChatModelBase):
                     f"fallback:{decision.route}_load_error",
                 ],
             )
+
+
+def _cloud_decision(reason: str) -> RoutingDecision:
+    return RoutingDecision(route="cloud", reasons=[reason])
 
 
 def _has_recent_tool_context(messages: list[dict]) -> bool:
@@ -325,9 +296,8 @@ def _has_recent_tool_context(messages: list[dict]) -> bool:
     last_message = non_system_messages[-1]
     if last_message.get("role") == "tool":
         return True
-    if (
-        last_message.get("role") == "assistant"
-        and last_message.get("tool_calls")
+    if last_message.get("role") == "assistant" and last_message.get(
+        "tool_calls",
     ):
         return True
 
@@ -338,7 +308,7 @@ def _has_recent_tool_context(messages: list[dict]) -> bool:
     return bool(
         previous_message.get("role") == "assistant"
         and previous_message.get("tool_calls")
-        and last_message.get("role") == "tool"
+        and last_message.get("role") == "tool",
     )
 
 

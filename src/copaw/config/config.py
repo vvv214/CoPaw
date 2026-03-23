@@ -352,6 +352,8 @@ class AgentsRunningConfig(BaseModel):
     def memory_compact_threshold(self) -> int:
         """Memory compact threshold size (tokens)."""
         return int(self.max_input_length * self.memory_compact_ratio)
+
+
 class AgentsLLMRoutingConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -375,6 +377,7 @@ class AgentsLLMRoutingConfig(BaseModel):
             "providers.json active_llm."
         ),
     )
+
 
 class AgentProfileRef(BaseModel):
     """Agent Profile reference (stored in root config.json).

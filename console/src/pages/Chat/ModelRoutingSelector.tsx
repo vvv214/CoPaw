@@ -63,9 +63,7 @@ function decodeRoutingSlotValue(value: string): {
   kind: "local" | "cloud";
   slot: ModelSlotConfig;
 } {
-  const kind = value.startsWith(ROUTING_LOCAL_SLOT_PREFIX)
-    ? "local"
-    : "cloud";
+  const kind = value.startsWith(ROUTING_LOCAL_SLOT_PREFIX) ? "local" : "cloud";
   const prefix =
     kind === "local" ? ROUTING_LOCAL_SLOT_PREFIX : ROUTING_CLOUD_SLOT_PREFIX;
   const payload = value.slice(prefix.length);
@@ -97,8 +95,10 @@ function getModelName(
     return "";
   }
   const provider = providers.find((item) => item.id === slot.provider_id);
-  const model = [...(provider?.models ?? []), ...(provider?.extra_models ?? [])]
-    .find((item) => item.id === slot.model);
+  const model = [
+    ...(provider?.models ?? []),
+    ...(provider?.extra_models ?? []),
+  ].find((item) => item.id === slot.model);
   return model?.name ?? slot.model;
 }
 
@@ -349,79 +349,72 @@ export default function ModelRoutingSelector() {
     }
   };
 
-  const menuItems = useMemo<MenuProps["items"]>(
-    () => {
-      const routingChildren: NonNullable<MenuProps["items"]> = [
-        {
-          key: ROUTING_LOCAL_FIRST,
-          label: t("chatModelSelector.localFirst"),
-          icon:
-            selectedKey === ROUTING_LOCAL_FIRST ? <CheckOutlined /> : null,
-        },
-        {
-          key: ROUTING_CLOUD_FIRST,
-          label: t("chatModelSelector.cloudFirst"),
-          icon:
-            selectedKey === ROUTING_CLOUD_FIRST ? <CheckOutlined /> : null,
-        },
-      ];
+  const menuItems = useMemo<MenuProps["items"]>(() => {
+    const routingChildren: NonNullable<MenuProps["items"]> = [
+      {
+        key: ROUTING_LOCAL_FIRST,
+        label: t("chatModelSelector.localFirst"),
+        icon: selectedKey === ROUTING_LOCAL_FIRST ? <CheckOutlined /> : null,
+      },
+      {
+        key: ROUTING_CLOUD_FIRST,
+        label: t("chatModelSelector.cloudFirst"),
+        icon: selectedKey === ROUTING_CLOUD_FIRST ? <CheckOutlined /> : null,
+      },
+    ];
 
-      if (localOptions.length > 1) {
-        routingChildren.push({
-          key: "routing-local-model",
-          label: t("chatModelSelector.localModel"),
-          children: localOptions.map((option) => ({
-            key: option.key,
-            label: option.label,
-            icon:
-              selectedLocalKey === option.key ? <CheckOutlined /> : null,
-          })),
-        });
-      }
+    if (localOptions.length > 1) {
+      routingChildren.push({
+        key: "routing-local-model",
+        label: t("chatModelSelector.localModel"),
+        children: localOptions.map((option) => ({
+          key: option.key,
+          label: option.label,
+          icon: selectedLocalKey === option.key ? <CheckOutlined /> : null,
+        })),
+      });
+    }
 
-      if (cloudOptions.length > 1) {
-        routingChildren.push({
-          key: "routing-cloud-model",
-          label: t("chatModelSelector.cloudModel"),
-          children: cloudOptions.map((option) => ({
-            key: option.key,
-            label: option.label,
-            icon:
-              selectedCloudKey === option.key ? <CheckOutlined /> : null,
-          })),
-        });
-      }
+    if (cloudOptions.length > 1) {
+      routingChildren.push({
+        key: "routing-cloud-model",
+        label: t("chatModelSelector.cloudModel"),
+        children: cloudOptions.map((option) => ({
+          key: option.key,
+          label: option.label,
+          icon: selectedCloudKey === option.key ? <CheckOutlined /> : null,
+        })),
+      });
+    }
 
-      return [
-        {
-          type: "group",
-          label: t("chatModelSelector.modelsGroup"),
-          children: modelOptions.map((option) => ({
-            key: option.key,
-            label: option.label,
-            icon: selectedKey === option.key ? <CheckOutlined /> : null,
-          })),
-        },
-        {
-          type: "divider",
-        },
-        {
-          type: "group",
-          label: t("chatModelSelector.routingGroup"),
-          children: routingChildren,
-        },
-      ];
-    },
-    [
-      cloudOptions,
-      localOptions,
-      modelOptions,
-      selectedCloudKey,
-      selectedKey,
-      selectedLocalKey,
-      t,
-    ],
-  );
+    return [
+      {
+        type: "group",
+        label: t("chatModelSelector.modelsGroup"),
+        children: modelOptions.map((option) => ({
+          key: option.key,
+          label: option.label,
+          icon: selectedKey === option.key ? <CheckOutlined /> : null,
+        })),
+      },
+      {
+        type: "divider",
+      },
+      {
+        type: "group",
+        label: t("chatModelSelector.routingGroup"),
+        children: routingChildren,
+      },
+    ];
+  }, [
+    cloudOptions,
+    localOptions,
+    modelOptions,
+    selectedCloudKey,
+    selectedKey,
+    selectedLocalKey,
+    t,
+  ]);
 
   const triggerLabel = routingConfig?.enabled
     ? t("chatModelSelector.triggerRouting")
@@ -435,8 +428,8 @@ export default function ModelRoutingSelector() {
           : "chatModelSelector.localFirst",
       )
     : hasConfiguredSlot(activeModels?.active_llm)
-      ? getModelMenuLabel(providers, activeModels.active_llm)
-      : "";
+    ? getModelMenuLabel(providers, activeModels.active_llm)
+    : "";
 
   return (
     <Dropdown
