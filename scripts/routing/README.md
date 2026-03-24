@@ -30,12 +30,14 @@ Important note:
     - `long-summary`
     - `high-risk-reasoning`
 - `probe_openai_compatible.py`
-  - single-endpoint smoke/probe helper
+  - single-endpoint smoke/probe helper for either raw OpenAI-compatible URLs or
+    configured CoPaw providers
 - `check_benchmark_providers.py`
   - inspect configured CoPaw providers and optionally run a tiny readiness
     probe
 - `compare_routes.py`
-  - paired local/cloud compare runner
+  - paired local/cloud compare runner, with either provider ids or raw
+    OpenAI-compatible URLs
 - `label_cases.py`
   - label aggregation from compare artifacts
 - `train_learned_router.py`
@@ -50,8 +52,7 @@ Important note:
 ```bash
 python3 scripts/routing/compare_routes.py \
   --cases scripts/routing/benchmark_cases_v1.jsonl \
-  --local-base-url http://127.0.0.1:8102/v1 \
-  --local-model qwen2.5-32b-awq-local \
+  --local-provider-id my-local-vllm \
   --cloud-provider-id openai \
   --cloud-model gpt-5-mini \
   --run-name v1-bench
@@ -73,6 +74,18 @@ benchmarking:
 ```bash
 python3 scripts/routing/check_benchmark_providers.py
 python3 scripts/routing/check_benchmark_providers.py --probe
+```
+
+If you want to stick with raw HTTP for the local slot, that still works:
+
+```bash
+python3 scripts/routing/compare_routes.py \
+  --cases scripts/routing/benchmark_cases_v1.jsonl \
+  --local-base-url http://127.0.0.1:8102/v1 \
+  --local-model qwen2.5-32b-awq-local \
+  --cloud-provider-id openai \
+  --cloud-model gpt-5-mini \
+  --run-name v1-bench
 ```
 
 2. Turn compare artifacts into routing labels:

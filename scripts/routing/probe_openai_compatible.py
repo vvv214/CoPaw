@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Probe an OpenAI-compatible chat endpoint with a small case suite."""
+"""Probe a benchmark endpoint with a small case suite."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from _common import (
+    BenchmarkInvocationResult,
     build_openai_compatible_headers,
-    resolve_provider_endpoint,
+    build_provider_benchmark_runtime,
+    invoke_provider_benchmark,
 )
 
 
@@ -63,63 +66,16 @@ def load_cases(path: str) -> list[dict[str, Any]]:
     return cases
 
 
-def build_request(
-    case: dict[str, Any],
-    model: str,
-    temperature: float,
-) -> dict[str, Any]:
-    return {
-        "model": model,
-        "messages": case["messages"],
-        "temperature": temperature,
-        "max_tokens": case.get("max_tokens", 256),
-    }
-
-
-def post_json(
-    url: str,
-    payload: dict[str, Any],
-    base_url: str,
-    api_key: str,
-    timeout: float,
-) -> dict[str, Any]:
-    body = json.dumps(payload).encode("utf-8")
-    headers = build_openai_compatible_headers(
-        base_url=base_url,
-        api_key=api_key,
-    )
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def summarize_response(result: dict[str, Any]) -> str:
-    choices = result.get("choices") or []
-    if not choices:
-        return ""
-    message = choices[0].get("message") or {}
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        return "\n".join(part.strip() for part in parts if part.strip())
-    return ""
-
-
-def main() -> int:
+async def main() -> int:
     args = parse_args()
+    runtime = None
+    base_url = args.base_url
+    api_key = args.api_key
+    model = args.model
+
     if args.provider_id:
         try:
-            endpoint_config = resolve_provider_endpoint(
+            runtime = build_provider_benchmark_runtime(
                 args.provider_id,
                 model=args.model or None,
                 base_url=args.base_url or None,
@@ -127,13 +83,9 @@ def main() -> int:
             )
         except (FileNotFoundError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
-        base_url = endpoint_config.base_url
-        api_key = endpoint_config.api_key
-        model = endpoint_config.model
-    else:
-        base_url = args.base_url
-        api_key = args.api_key
-        model = args.model
+        base_url = runtime.base_url
+        model = runtime.model
+        api_key = ""
 
     if not base_url:
         raise SystemExit("Missing --base-url or --provider-id.")
@@ -144,38 +96,44 @@ def main() -> int:
 
     cases = load_cases(args.cases)
     output_path = Path(args.output) if args.output else None
-    endpoint = base_url.rstrip("/") + "/chat/completions"
-    if output_path is None:
-        _run_probe_cases(
-            cases,
-            endpoint=endpoint,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            temperature=args.temperature,
-            timeout=args.timeout,
-            output_handle=None,
-        )
-    else:
-        with output_path.open("w", encoding="utf-8") as output_handle:
-            _run_probe_cases(
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async with httpx.AsyncClient(timeout=args.timeout) as client:
+        if output_path is None:
+            await _run_probe_cases(
                 cases,
-                endpoint=endpoint,
+                client=client,
+                runtime=runtime,
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
                 temperature=args.temperature,
                 timeout=args.timeout,
-                output_handle=output_handle,
+                output_handle=None,
             )
+        else:
+            with output_path.open("w", encoding="utf-8") as output_handle:
+                await _run_probe_cases(
+                    cases,
+                    client=client,
+                    runtime=runtime,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    temperature=args.temperature,
+                    timeout=args.timeout,
+                    output_handle=output_handle,
+                )
 
     return 0
 
 
-def _run_probe_cases(
+async def _run_probe_cases(
     cases: list[dict[str, Any]],
     *,
-    endpoint: str,
+    client: httpx.AsyncClient,
+    runtime,
     base_url: str,
     api_key: str,
     model: str,
@@ -184,7 +142,6 @@ def _run_probe_cases(
     output_handle,
 ) -> None:
     for case in cases:
-        payload = build_request(case, model, temperature)
         started_at = time.perf_counter()
         record: dict[str, Any] = {
             "id": case["id"],
@@ -193,38 +150,44 @@ def _run_probe_cases(
             "endpoint": base_url,
         }
         try:
-            response = post_json(
-                endpoint,
-                payload,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout,
-            )
+            if runtime is not None:
+                response = await asyncio.wait_for(
+                    invoke_provider_benchmark(
+                        runtime,
+                        messages=case["messages"],
+                        temperature=temperature,
+                        max_tokens=case.get("max_tokens", 256),
+                    ),
+                    timeout=timeout,
+                )
+            else:
+                response = await _probe_http_endpoint(
+                    client,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    case=case,
+                    temperature=temperature,
+                )
+
             elapsed = time.perf_counter() - started_at
             record.update(
                 {
                     "ok": True,
                     "latency_s": round(elapsed, 3),
-                    "usage": response.get("usage"),
-                    "finish_reason": (
-                        (response.get("choices") or [{}])[0].get(
-                            "finish_reason",
-                        )
-                    ),
-                    "response_text": summarize_response(response),
+                    "usage": response.usage,
+                    "finish_reason": response.finish_reason,
+                    "response_text": response.response_text,
                 },
             )
-        except urllib.error.HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
             elapsed = time.perf_counter() - started_at
             record.update(
                 {
                     "ok": False,
                     "latency_s": round(elapsed, 3),
-                    "error": f"HTTP {exc.code}",
-                    "error_body": exc.read().decode(
-                        "utf-8",
-                        errors="replace",
-                    ),
+                    "error": f"HTTP {exc.response.status_code}",
+                    "error_body": exc.response.text,
                 },
             )
         except Exception as exc:  # pragma: no cover - probe script guardrail
@@ -244,5 +207,49 @@ def _run_probe_cases(
             output_handle.flush()
 
 
+async def _probe_http_endpoint(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    case: dict[str, Any],
+    temperature: float,
+) -> BenchmarkInvocationResult:
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": case["messages"],
+        "temperature": temperature,
+        "max_tokens": case.get("max_tokens", 256),
+    }
+    headers = build_openai_compatible_headers(
+        base_url=base_url,
+        api_key=api_key,
+    )
+    response = await client.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    body = response.json()
+    choice = (body.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    return BenchmarkInvocationResult(
+        response_text=_summarize_content(message.get("content")),
+        finish_reason=choice.get("finish_reason") or "stop",
+        usage=body.get("usage"),
+    )
+
+
+def _summarize_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+        return "\n".join(part.strip() for part in parts if part.strip())
+    return ""
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))

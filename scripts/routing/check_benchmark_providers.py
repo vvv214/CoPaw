@@ -10,13 +10,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from _common import (
     PROVIDER_CONFIG_ROOT,
-    build_openai_compatible_headers,
+    build_provider_benchmark_runtime,
     default_model_for_provider,
+    invoke_provider_benchmark,
     load_provider_config,
+    supports_benchmark_provider,
 )
 
 
@@ -61,11 +61,10 @@ async def main() -> int:
     records = load_provider_records(provider_ids=provider_ids or None)
 
     if args.probe:
-        async with httpx.AsyncClient(timeout=args.timeout) as client:
-            records = [
-                await maybe_probe_provider(client, record)
-                for record in records
-            ]
+        records = [
+            await maybe_probe_provider(record, timeout=args.timeout)
+            for record in records
+        ]
 
     for record in records:
         print(json.dumps(record, ensure_ascii=True))
@@ -111,10 +110,11 @@ def classify_provider_record(config: dict[str, Any]) -> dict[str, Any]:
         is_local=is_local,
     )
     openai_compatible = chat_model == "OpenAIChatModel"
+    benchmark_supported = supports_benchmark_provider(config)
     default_model = default_model_for_provider(config)
     benchmark_role = classify_benchmark_role(
         runtime_scope=runtime_scope,
-        openai_compatible=openai_compatible,
+        benchmark_supported=benchmark_supported,
     )
     automation_safe = provider_id != "aliyun-codingplan"
     status, note = classify_status(
@@ -122,7 +122,7 @@ def classify_provider_record(config: dict[str, Any]) -> dict[str, Any]:
         base_url=base_url,
         require_api_key=require_api_key,
         has_api_key=has_api_key,
-        openai_compatible=openai_compatible,
+        benchmark_supported=benchmark_supported,
         automation_safe=automation_safe,
         default_model=default_model,
     )
@@ -134,6 +134,7 @@ def classify_provider_record(config: dict[str, Any]) -> dict[str, Any]:
         "runtime_scope": runtime_scope,
         "benchmark_role": benchmark_role,
         "openai_compatible": openai_compatible,
+        "benchmark_supported": benchmark_supported,
         "automation_safe": automation_safe,
         "require_api_key": require_api_key,
         "has_api_key": has_api_key,
@@ -160,9 +161,9 @@ def classify_runtime_scope(
 def classify_benchmark_role(
     *,
     runtime_scope: str,
-    openai_compatible: bool,
+    benchmark_supported: bool,
 ) -> str:
-    if not openai_compatible:
+    if not benchmark_supported:
         return "unsupported"
     if runtime_scope == "cloud":
         return "cloud_candidate"
@@ -175,17 +176,17 @@ def classify_status(
     base_url: str,
     require_api_key: bool,
     has_api_key: bool,
-    openai_compatible: bool,
+    benchmark_supported: bool,
     automation_safe: bool,
     default_model: str,
 ) -> tuple[str, str]:
     status = "ready_for_probe"
     note = "Provider is ready for automated probe."
-    if not openai_compatible:
-        status = "unsupported_chat_model"
+    if not benchmark_supported:
+        status = "unsupported_provider"
         note = (
             "Current routing benchmark scripts only support "
-            "OpenAI-compatible endpoints."
+            "providers with benchmark-compatible chat model adapters."
         )
     elif not base_url:
         status = "missing_base_url"
@@ -210,8 +211,9 @@ def classify_status(
 
 
 async def maybe_probe_provider(
-    client: httpx.AsyncClient,
     record: dict[str, Any],
+    *,
+    timeout: float,
 ) -> dict[str, Any]:
     if record["status"] not in {
         "ready_for_probe",
@@ -220,24 +222,19 @@ async def maybe_probe_provider(
     }:
         return record
 
-    payload = {
-        "model": record["default_model"],
-        "messages": [{"role": "user", "content": "Reply with OK."}],
-        "temperature": 0.0,
-        "max_tokens": 4,
-    }
-    url = record["base_url"].rstrip("/") + "/chat/completions"
-    headers = build_openai_compatible_headers(
-        base_url=record["base_url"],
-        api_key=_provider_api_key(record["provider_id"]),
-    )
     started_at = asyncio.get_running_loop().time()
     updated = dict(record)
     try:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        body = response.json()
-        choice = (body.get("choices") or [{}])[0]
+        runtime = build_provider_benchmark_runtime(record["provider_id"])
+        response = await asyncio.wait_for(
+            invoke_provider_benchmark(
+                runtime,
+                messages=[{"role": "user", "content": "Reply with OK."}],
+                temperature=0.0,
+                max_tokens=4,
+            ),
+            timeout=timeout,
+        )
         updated.update(
             {
                 "probe_ok": True,
@@ -245,7 +242,7 @@ async def maybe_probe_provider(
                     asyncio.get_running_loop().time() - started_at,
                     3,
                 ),
-                "probe_finish_reason": choice.get("finish_reason"),
+                "probe_finish_reason": response.finish_reason,
             },
         )
     except Exception as exc:  # pragma: no cover - network guardrail
@@ -291,10 +288,6 @@ def _provider_config_files() -> list[Path]:
         if directory.exists():
             paths.extend(directory.glob("*.json"))
     return paths
-
-
-def _provider_api_key(provider_id: str) -> str:
-    return str(load_provider_config(provider_id).get("api_key") or "").strip()
 
 
 if __name__ == "__main__":

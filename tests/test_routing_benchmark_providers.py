@@ -87,3 +87,45 @@ def test_classify_provider_record_marks_ollama_local_only() -> None:
     assert record["runtime_scope"] == "local"
     assert record["benchmark_role"] == "local_candidate"
     assert record["status"] == "local_only"
+
+
+def test_classify_provider_record_marks_anthropic_supported() -> None:
+    record = classify_provider_record(
+        {
+            "id": "anthropic",
+            "name": "Anthropic",
+            "chat_model": "AnthropicChatModel",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "",
+            "require_api_key": True,
+            "is_local": False,
+            "models": [{"id": "claude-sonnet-4-5", "name": "Claude"}],
+            "extra_models": [],
+        },
+    )
+
+    assert record["benchmark_supported"] is True
+    assert record["benchmark_role"] == "cloud_candidate"
+    assert record["status"] == "missing_api_key"
+
+
+def test_classify_provider_record_marks_unknown_chat_model_unsupported() -> (
+    None
+):
+    record = classify_provider_record(
+        {
+            "id": "custom-router",
+            "name": "Custom Router",
+            "chat_model": "RouterChatModel",
+            "base_url": "https://example.com",
+            "api_key": "sk-test",
+            "require_api_key": True,
+            "is_local": False,
+            "models": [{"id": "router-1", "name": "Router 1"}],
+            "extra_models": [],
+        },
+    )
+
+    assert record["benchmark_supported"] is False
+    assert record["benchmark_role"] == "unsupported"
+    assert record["status"] == "unsupported_provider"

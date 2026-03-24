@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from _common import (
+    BenchmarkInvocationResult,
     DEFAULT_CASES_PATH,
     DEFAULT_CLOUD_API_KEY_ENV,
     DEFAULT_CLOUD_BASE_URL,
@@ -24,9 +25,10 @@ from _common import (
     DEFAULT_LOCAL_BASE_URL,
     DEFAULT_LOCAL_MODEL,
     DEFAULT_OUTPUT_ROOT,
+    build_provider_benchmark_runtime,
     build_openai_compatible_headers,
+    invoke_provider_benchmark,
     load_jsonl,
-    resolve_provider_endpoint,
     score_case_response,
     write_jsonl,
 )
@@ -35,9 +37,12 @@ from _common import (
 @dataclass(frozen=True)
 class EndpointConfig:
     route: str
+    kind: str
     base_url: str
     model: str
     api_key: str
+    provider_id: str = ""
+    runtime: Any | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", default="")
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--local-provider-id", default="")
     parser.add_argument("--local-base-url", default=DEFAULT_LOCAL_BASE_URL)
     parser.add_argument("--local-model", default=DEFAULT_LOCAL_MODEL)
     parser.add_argument("--local-api-key", default=DEFAULT_LOCAL_API_KEY)
@@ -61,6 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--cloud-api-key-env",
         default=DEFAULT_CLOUD_API_KEY_ENV,
     )
+    parser.add_argument("--control-provider-id", default="")
     parser.add_argument("--control-base-url", default="")
     parser.add_argument("--control-model", default="")
     parser.add_argument("--control-api-key", default="")
@@ -69,51 +76,34 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> int:
     args = parse_args()
-    if args.cloud_provider_id:
-        try:
-            cloud_endpoint = resolve_provider_endpoint(
-                args.cloud_provider_id,
-                model=args.cloud_model or None,
-                base_url=args.cloud_base_url or None,
-                api_key=args.cloud_api_key or None,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            raise SystemExit(str(exc)) from exc
-    else:
-        cloud_api_key = args.cloud_api_key or os.getenv(
-            args.cloud_api_key_env,
-            "",
-        )
-        if not cloud_api_key:
-            raise SystemExit(
-                "Missing cloud API key. Pass --cloud-api-key or set "
-                f"{args.cloud_api_key_env}.",
-            )
-        cloud_endpoint = EndpointConfig(
-            route="cloud",
-            base_url=args.cloud_base_url or DEFAULT_CLOUD_BASE_URL,
-            model=args.cloud_model or DEFAULT_CLOUD_MODEL,
-            api_key=cloud_api_key,
-        )
-
     endpoints = [
-        EndpointConfig(
+        build_endpoint_config(
             route="local",
+            provider_id=args.local_provider_id,
             base_url=args.local_base_url,
             model=args.local_model,
             api_key=args.local_api_key,
         ),
-        EndpointConfig(
+        build_endpoint_config(
             route="cloud",
-            base_url=cloud_endpoint.base_url,
-            model=cloud_endpoint.model,
-            api_key=cloud_endpoint.api_key,
+            provider_id=args.cloud_provider_id,
+            base_url=args.cloud_base_url or DEFAULT_CLOUD_BASE_URL,
+            model=args.cloud_model or DEFAULT_CLOUD_MODEL,
+            api_key=(
+                args.cloud_api_key or os.getenv(args.cloud_api_key_env, "")
+            ),
+            require_api_key_env=(
+                args.cloud_api_key_env if not args.cloud_provider_id else ""
+            ),
         ),
     ]
-    if args.control_base_url and args.control_model:
+    if args.control_provider_id or (
+        args.control_base_url and args.control_model
+    ):
         endpoints.append(
-            EndpointConfig(
+            build_endpoint_config(
                 route="control",
+                provider_id=args.control_provider_id,
                 base_url=args.control_base_url,
                 model=args.control_model,
                 api_key=args.control_api_key,
@@ -136,6 +126,7 @@ async def main() -> int:
                         endpoint=endpoint,
                         case=case,
                         temperature=args.temperature,
+                        timeout=args.timeout,
                     )
                     for endpoint in endpoints
                 ],
@@ -176,19 +167,8 @@ async def probe_endpoint(
     endpoint: EndpointConfig,
     case: dict[str, Any],
     temperature: float,
+    timeout: float,
 ) -> dict[str, Any]:
-    url = endpoint.base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": endpoint.model,
-        "messages": case["messages"],
-        "temperature": temperature,
-        "max_tokens": case.get("max_tokens", 256),
-    }
-    headers = build_openai_compatible_headers(
-        base_url=endpoint.base_url,
-        api_key=endpoint.api_key,
-    )
-
     started_at = asyncio.get_running_loop().time()
     record: dict[str, Any] = {
         "route": endpoint.route,
@@ -196,17 +176,29 @@ async def probe_endpoint(
         "model": endpoint.model,
     }
     try:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        body = response.json()
-        choice = (body.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        response_text = _summarize_content(message.get("content"))
-        finish_reason = choice.get("finish_reason")
+        if endpoint.kind == "provider_model":
+            assert endpoint.runtime is not None
+            invocation = await asyncio.wait_for(
+                invoke_provider_benchmark(
+                    endpoint.runtime,
+                    messages=case["messages"],
+                    temperature=temperature,
+                    max_tokens=case.get("max_tokens", 256),
+                ),
+                timeout=timeout,
+            )
+        else:
+            invocation = await probe_http_endpoint(
+                client,
+                endpoint=endpoint,
+                case=case,
+                temperature=temperature,
+            )
+
         rubric_result = score_case_response(
             case,
-            response_text=response_text,
-            finish_reason=finish_reason,
+            response_text=invocation.response_text,
+            finish_reason=invocation.finish_reason,
         )
         record.update(
             {
@@ -215,9 +207,9 @@ async def probe_endpoint(
                     asyncio.get_running_loop().time() - started_at,
                     3,
                 ),
-                "finish_reason": finish_reason,
-                "usage": body.get("usage"),
-                "response_text": response_text,
+                "finish_reason": invocation.finish_reason,
+                "usage": invocation.usage,
+                "response_text": invocation.response_text,
                 "truncation": rubric_result["truncation"],
                 "score": rubric_result["score"],
                 "passed": rubric_result["passed"],
@@ -243,6 +235,80 @@ async def probe_endpoint(
             },
         )
     return record
+
+
+def build_endpoint_config(
+    *,
+    route: str,
+    provider_id: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    require_api_key_env: str = "",
+) -> EndpointConfig:
+    if provider_id:
+        try:
+            runtime = build_provider_benchmark_runtime(
+                provider_id,
+                model=model or None,
+                base_url=base_url or None,
+                api_key=api_key or None,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        return EndpointConfig(
+            route=route,
+            kind="provider_model",
+            base_url=runtime.base_url,
+            model=runtime.model,
+            api_key="",
+            provider_id=runtime.provider_id,
+            runtime=runtime,
+        )
+
+    if require_api_key_env and not api_key:
+        raise SystemExit(
+            "Missing cloud API key. Pass --cloud-api-key or set "
+            f"{require_api_key_env}.",
+        )
+
+    return EndpointConfig(
+        route=route,
+        kind="openai_compatible_http",
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+
+
+async def probe_http_endpoint(
+    client: httpx.AsyncClient,
+    *,
+    endpoint: EndpointConfig,
+    case: dict[str, Any],
+    temperature: float,
+) -> BenchmarkInvocationResult:
+    url = endpoint.base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": endpoint.model,
+        "messages": case["messages"],
+        "temperature": temperature,
+        "max_tokens": case.get("max_tokens", 256),
+    }
+    headers = build_openai_compatible_headers(
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key,
+    )
+    response = await client.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    body = response.json()
+    choice = (body.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    return BenchmarkInvocationResult(
+        response_text=_summarize_content(message.get("content")),
+        finish_reason=choice.get("finish_reason") or "stop",
+        usage=body.get("usage"),
+    )
 
 
 def build_output_dir(root: Path, *, run_name: str) -> Path:
