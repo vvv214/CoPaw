@@ -31,6 +31,9 @@ Important note:
     - `high-risk-reasoning`
 - `probe_openai_compatible.py`
   - single-endpoint smoke/probe helper
+- `check_benchmark_providers.py`
+  - inspect configured CoPaw providers and optionally run a tiny readiness
+    probe
 - `compare_routes.py`
   - paired local/cloud compare runner
 - `label_cases.py`
@@ -62,6 +65,14 @@ python3 scripts/routing/probe_openai_compatible.py \
   --model gpt-5-mini \
   --cases scripts/routing/seed_cases.jsonl \
   --output /tmp/openai-probe.jsonl
+```
+
+If you want to see which configured providers are even usable for automated
+benchmarking:
+
+```bash
+python3 scripts/routing/check_benchmark_providers.py
+python3 scripts/routing/check_benchmark_providers.py --probe
 ```
 
 2. Turn compare artifacts into routing labels:
