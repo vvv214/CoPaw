@@ -26,6 +26,7 @@ from _common import (
     DEFAULT_OUTPUT_ROOT,
     build_openai_compatible_headers,
     load_jsonl,
+    resolve_provider_endpoint,
     score_case_response,
     write_jsonl,
 )
@@ -52,8 +53,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-base-url", default=DEFAULT_LOCAL_BASE_URL)
     parser.add_argument("--local-model", default=DEFAULT_LOCAL_MODEL)
     parser.add_argument("--local-api-key", default=DEFAULT_LOCAL_API_KEY)
-    parser.add_argument("--cloud-base-url", default=DEFAULT_CLOUD_BASE_URL)
-    parser.add_argument("--cloud-model", default=DEFAULT_CLOUD_MODEL)
+    parser.add_argument("--cloud-provider-id", default="")
+    parser.add_argument("--cloud-base-url", default="")
+    parser.add_argument("--cloud-model", default="")
     parser.add_argument("--cloud-api-key", default="")
     parser.add_argument(
         "--cloud-api-key-env",
@@ -67,11 +69,31 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> int:
     args = parse_args()
-    cloud_api_key = args.cloud_api_key or os.getenv(args.cloud_api_key_env, "")
-    if not cloud_api_key:
-        raise SystemExit(
-            "Missing cloud API key. Pass --cloud-api-key or set "
-            f"{args.cloud_api_key_env}.",
+    if args.cloud_provider_id:
+        try:
+            cloud_endpoint = resolve_provider_endpoint(
+                args.cloud_provider_id,
+                model=args.cloud_model or None,
+                base_url=args.cloud_base_url or None,
+                api_key=args.cloud_api_key or None,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        cloud_api_key = args.cloud_api_key or os.getenv(
+            args.cloud_api_key_env,
+            "",
+        )
+        if not cloud_api_key:
+            raise SystemExit(
+                "Missing cloud API key. Pass --cloud-api-key or set "
+                f"{args.cloud_api_key_env}.",
+            )
+        cloud_endpoint = EndpointConfig(
+            route="cloud",
+            base_url=args.cloud_base_url or DEFAULT_CLOUD_BASE_URL,
+            model=args.cloud_model or DEFAULT_CLOUD_MODEL,
+            api_key=cloud_api_key,
         )
 
     endpoints = [
@@ -83,9 +105,9 @@ async def main() -> int:
         ),
         EndpointConfig(
             route="cloud",
-            base_url=args.cloud_base_url,
-            model=args.cloud_model,
-            api_key=cloud_api_key,
+            base_url=cloud_endpoint.base_url,
+            model=cloud_endpoint.model,
+            api_key=cloud_endpoint.api_key,
         ),
     ]
     if args.control_base_url and args.control_model:

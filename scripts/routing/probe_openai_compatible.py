@@ -13,22 +13,30 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from _common import build_openai_compatible_headers
+from _common import (
+    build_openai_compatible_headers,
+    resolve_provider_endpoint,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--base-url",
-        required=True,
+        default="",
         help="Endpoint base URL, e.g. http://127.0.0.1:8102/v1",
+    )
+    parser.add_argument(
+        "--provider-id",
+        default="",
+        help="Configured CoPaw provider id to resolve base URL and API key",
     )
     parser.add_argument(
         "--api-key",
         default="",
         help="Bearer token if required by the endpoint",
     )
-    parser.add_argument("--model", required=True, help="Served model name")
+    parser.add_argument("--model", default="", help="Served model name")
     parser.add_argument(
         "--cases",
         required=True,
@@ -109,16 +117,41 @@ def summarize_response(result: dict[str, Any]) -> str:
 
 def main() -> int:
     args = parse_args()
+    if args.provider_id:
+        try:
+            endpoint_config = resolve_provider_endpoint(
+                args.provider_id,
+                model=args.model or None,
+                base_url=args.base_url or None,
+                api_key=args.api_key or None,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        base_url = endpoint_config.base_url
+        api_key = endpoint_config.api_key
+        model = endpoint_config.model
+    else:
+        base_url = args.base_url
+        api_key = args.api_key
+        model = args.model
+
+    if not base_url:
+        raise SystemExit("Missing --base-url or --provider-id.")
+    if not model:
+        raise SystemExit(
+            "Missing --model or --provider-id with configured models.",
+        )
+
     cases = load_cases(args.cases)
     output_path = Path(args.output) if args.output else None
-    endpoint = args.base_url.rstrip("/") + "/chat/completions"
+    endpoint = base_url.rstrip("/") + "/chat/completions"
     if output_path is None:
         _run_probe_cases(
             cases,
             endpoint=endpoint,
-            base_url=args.base_url,
-            api_key=args.api_key,
-            model=args.model,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
             temperature=args.temperature,
             timeout=args.timeout,
             output_handle=None,
@@ -128,9 +161,9 @@ def main() -> int:
             _run_probe_cases(
                 cases,
                 endpoint=endpoint,
-                base_url=args.base_url,
-                api_key=args.api_key,
-                model=args.model,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
                 temperature=args.temperature,
                 timeout=args.timeout,
                 output_handle=output_handle,

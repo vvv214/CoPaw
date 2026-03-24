@@ -10,9 +10,15 @@ This folder now supports the full learned-router v1 workflow:
 Current baseline assumptions:
 
 - `local`: `qwen2.5-32b-awq-local`
-- `cloud`: `aliyun-codingplan / qwen3.5-plus`
+- `cloud`: a configured API-safe provider such as `openai`, `dashscope`, or a
+  custom OpenAI-compatible endpoint
 - `control` (offline only): `deepseek-r1-qwen32b-local`
 - benchmark output root: `/bigtemp/nkp2mr/shared-benchmarks/copaw-routing`
+
+Important note:
+
+- `aliyun-codingplan` is still useful for interactive spot checks, but it is
+  not the right default for automated batch benchmarking.
 
 ## Files
 
@@ -43,9 +49,19 @@ python3 scripts/routing/compare_routes.py \
   --cases scripts/routing/benchmark_cases_v1.jsonl \
   --local-base-url http://127.0.0.1:8102/v1 \
   --local-model qwen2.5-32b-awq-local \
-  --cloud-base-url https://coding.dashscope.aliyuncs.com/v1 \
-  --cloud-model qwen3.5-plus \
+  --cloud-provider-id openai \
+  --cloud-model gpt-5-mini \
   --run-name v1-bench
+```
+
+If you want to probe a configured provider directly:
+
+```bash
+python3 scripts/routing/probe_openai_compatible.py \
+  --provider-id openai \
+  --model gpt-5-mini \
+  --cases scripts/routing/seed_cases.jsonl \
+  --output /tmp/openai-probe.jsonl
 ```
 
 2. Turn compare artifacts into routing labels:

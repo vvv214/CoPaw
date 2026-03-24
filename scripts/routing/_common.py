@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from copaw.agents.routing_learned_router import (
     build_structured_feature_values,
     build_text_feature_counts,
 )
+from copaw.constant import SECRET_DIR
 
 DEFAULT_CASES_PATH = SCRIPT_DIR / "benchmark_cases_v1.jsonl"
 DEFAULT_ARTIFACT_PATH = SCRIPT_DIR / "artifacts" / "learned_router_v1.json"
@@ -37,6 +39,7 @@ DEFAULT_CLOUD_MODEL = "qwen3.5-plus"
 DEFAULT_CLOUD_API_KEY_ENV = "DASHSCOPE_API_KEY"
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 CODING_DASHSCOPE_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
+PROVIDER_CONFIG_ROOT = SECRET_DIR / "providers"
 
 FRESHNESS_KEYWORDS = (
     "latest",
@@ -72,6 +75,16 @@ JSON_FENCE_PATTERN = re.compile(
     flags=re.DOTALL,
 )
 BULLET_PATTERN = re.compile(r"^\s*(?:[-*]|\d+\.)\s+", flags=re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class ProviderEndpointConfig:
+    provider_id: str
+    base_url: str
+    model: str
+    api_key: str
+    require_api_key: bool
+    is_local: bool
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -116,6 +129,71 @@ def build_openai_compatible_headers(
     elif normalized_base_url == CODING_DASHSCOPE_BASE_URL:
         headers["X-DashScope-Cdpl"] = metadata
     return headers
+
+
+def resolve_provider_endpoint(
+    provider_id: str,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> ProviderEndpointConfig:
+    config = load_provider_config(provider_id)
+    resolved_base_url = (base_url or str(config.get("base_url") or "")).strip()
+    if not resolved_base_url:
+        raise ValueError(
+            f"Provider '{provider_id}' does not have a configured base URL.",
+        )
+
+    resolved_api_key = (api_key or str(config.get("api_key") or "")).strip()
+    require_api_key = bool(config.get("require_api_key", True))
+    if require_api_key and not resolved_api_key:
+        raise ValueError(
+            f"Provider '{provider_id}' requires an API key but none is set.",
+        )
+
+    resolved_model = (model or default_model_for_provider(config)).strip()
+    if not resolved_model:
+        raise ValueError(
+            f"Provider '{provider_id}' does not have any configured models.",
+        )
+
+    return ProviderEndpointConfig(
+        provider_id=provider_id,
+        base_url=resolved_base_url,
+        model=resolved_model,
+        api_key=resolved_api_key,
+        require_api_key=require_api_key,
+        is_local=bool(config.get("is_local", False)),
+    )
+
+
+def load_provider_config(provider_id: str) -> dict[str, Any]:
+    for path in provider_config_paths(provider_id):
+        if not path.exists():
+            continue
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    raise FileNotFoundError(
+        f"Provider configuration for '{provider_id}' was not found.",
+    )
+
+
+def provider_config_paths(provider_id: str) -> list[Path]:
+    return [
+        PROVIDER_CONFIG_ROOT / "builtin" / f"{provider_id}.json",
+        PROVIDER_CONFIG_ROOT / "custom" / f"{provider_id}.json",
+    ]
+
+
+def default_model_for_provider(config: dict[str, Any]) -> str:
+    for field_name in ("extra_models", "models"):
+        items = config.get(field_name) or []
+        for item in items:
+            model_id = str(item.get("id") or "").strip()
+            if model_id:
+                return model_id
+    return ""
 
 
 def latest_user_text(messages: list[dict[str, Any]]) -> str:
