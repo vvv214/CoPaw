@@ -10,7 +10,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -109,74 +108,102 @@ def main() -> int:
     cases = load_cases(args.cases)
     output_path = Path(args.output) if args.output else None
     endpoint = args.base_url.rstrip("/") + "/chat/completions"
-    context = (
-        output_path.open("w", encoding="utf-8")
-        if output_path is not None
-        else nullcontext(None)
-    )
-    with context as output_handle:
-        for case in cases:
-            payload = build_request(case, args.model, args.temperature)
-            started_at = time.perf_counter()
-            record: dict[str, Any] = {
-                "id": case["id"],
-                "category": case.get("category", ""),
-                "model": args.model,
-                "endpoint": args.base_url,
-            }
-            try:
-                response = post_json(
-                    endpoint,
-                    payload,
-                    api_key=args.api_key,
-                    timeout=args.timeout,
-                )
-                elapsed = time.perf_counter() - started_at
-                record.update(
-                    {
-                        "ok": True,
-                        "latency_s": round(elapsed, 3),
-                        "usage": response.get("usage"),
-                        "finish_reason": (
-                            (response.get("choices") or [{}])[0].get(
-                                "finish_reason",
-                            )
-                        ),
-                        "response_text": summarize_response(response),
-                    },
-                )
-            except urllib.error.HTTPError as exc:
-                elapsed = time.perf_counter() - started_at
-                record.update(
-                    {
-                        "ok": False,
-                        "latency_s": round(elapsed, 3),
-                        "error": f"HTTP {exc.code}",
-                        "error_body": exc.read().decode(
-                            "utf-8",
-                            errors="replace",
-                        ),
-                    },
-                )
-            except (
-                Exception
-            ) as exc:  # pragma: no cover - probe script guardrail
-                elapsed = time.perf_counter() - started_at
-                record.update(
-                    {
-                        "ok": False,
-                        "latency_s": round(elapsed, 3),
-                        "error": f"{type(exc).__name__}: {exc}",
-                    },
-                )
-
-            line = json.dumps(record, ensure_ascii=True)
-            print(line)
-            if output_handle is not None:
-                output_handle.write(line + "\n")
-                output_handle.flush()
+    if output_path is None:
+        _run_probe_cases(
+            cases,
+            endpoint=endpoint,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            model=args.model,
+            temperature=args.temperature,
+            timeout=args.timeout,
+            output_handle=None,
+        )
+    else:
+        with output_path.open("w", encoding="utf-8") as output_handle:
+            _run_probe_cases(
+                cases,
+                endpoint=endpoint,
+                base_url=args.base_url,
+                api_key=args.api_key,
+                model=args.model,
+                temperature=args.temperature,
+                timeout=args.timeout,
+                output_handle=output_handle,
+            )
 
     return 0
+
+
+def _run_probe_cases(
+    cases: list[dict[str, Any]],
+    *,
+    endpoint: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    temperature: float,
+    timeout: float,
+    output_handle,
+) -> None:
+    for case in cases:
+        payload = build_request(case, model, temperature)
+        started_at = time.perf_counter()
+        record: dict[str, Any] = {
+            "id": case["id"],
+            "category": case.get("category", ""),
+            "model": model,
+            "endpoint": base_url,
+        }
+        try:
+            response = post_json(
+                endpoint,
+                payload,
+                api_key=api_key,
+                timeout=timeout,
+            )
+            elapsed = time.perf_counter() - started_at
+            record.update(
+                {
+                    "ok": True,
+                    "latency_s": round(elapsed, 3),
+                    "usage": response.get("usage"),
+                    "finish_reason": (
+                        (response.get("choices") or [{}])[0].get(
+                            "finish_reason",
+                        )
+                    ),
+                    "response_text": summarize_response(response),
+                },
+            )
+        except urllib.error.HTTPError as exc:
+            elapsed = time.perf_counter() - started_at
+            record.update(
+                {
+                    "ok": False,
+                    "latency_s": round(elapsed, 3),
+                    "error": f"HTTP {exc.code}",
+                    "error_body": exc.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    ),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - probe script guardrail
+            elapsed = time.perf_counter() - started_at
+            record.update(
+                {
+                    "ok": False,
+                    "latency_s": round(elapsed, 3),
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+        line = json.dumps(record, ensure_ascii=True)
+        print(line)
+        if output_handle is not None:
+            output_handle.write(line + "\n")
+            output_handle.flush()
 
 
 if __name__ == "__main__":

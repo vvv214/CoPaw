@@ -301,6 +301,7 @@ def _create_routing_model_and_formatter(
     routing_cfg,
     *,
     manager: ProviderManager,
+    request_context: dict[str, str] | None = None,
 ) -> Optional[Tuple[ChatModelBase, FormatterBase]]:
     from .routing_chat_model import RoutingChatModel
 
@@ -327,6 +328,7 @@ def _create_routing_model_and_formatter(
         local_endpoint=local_endpoint,
         cloud_endpoint=cloud_endpoint,
         routing_cfg=routing_cfg,
+        request_context=request_context,
     )
     return model, _create_formatter_from_family(
         local_endpoint.formatter_family,
@@ -402,6 +404,7 @@ def _create_default_model_and_formatter(
 
 def create_model_and_formatter(
     agent_id: Optional[str] = None,
+    request_context: dict[str, str] | None = None,
 ) -> Tuple[ChatModelBase, FormatterBase]:
     """Factory method to create model and formatter instances."""
 
@@ -435,6 +438,7 @@ def create_model_and_formatter(
                 cloud_slot,
                 routing_cfg,
                 manager=manager,
+                request_context=request_context,
             )
             if routed_model is not None:
                 return routed_model

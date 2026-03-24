@@ -1,78 +1,100 @@
 ## Routing Experiments
 
-This folder contains lightweight scripts for comparing local and cloud
-OpenAI-compatible endpoints while the routing policy is still evolving.
+This folder now supports the full learned-router v1 workflow:
 
-Current working assumptions:
+1. compare `local` vs `cloud` on a fixed case pack
+2. aggregate labels from those paired results
+3. train a portable learned-router artifact
+4. report whether the artifact clears the routing acceptance thresholds
 
-- local models should handle cheap, low-risk, latency-sensitive requests
-- cloud models should handle tool-heavy, structured, long-context, or
-  high-reasoning requests
-- experiments should record both latency and a short qualitative judgment
+Current baseline assumptions:
 
-Observed on 2026-03-23 with UVA DPLab:
+- `local`: `qwen2.5-32b-awq-local`
+- `cloud`: `aliyun-codingplan / qwen3.5-plus`
+- `control` (offline only): `deepseek-r1-qwen32b-local`
+- benchmark output root: `/bigtemp/nkp2mr/shared-benchmarks/copaw-routing`
 
-- `qwen2.5-32b-awq-local` is a much better default local responder than
-  `deepseek-r1-qwen32b-local`
-- `qwen2.5-32b-awq-local` answered short chat / rewrite cases in roughly
-  `1.3s-2.4s`
-- `deepseek-r1-qwen32b-local` took roughly `9s-16s` on the same suite and
-  often spent most of its budget on chain-of-thought style preamble, then
-  truncated
-- both local models failed the strict-format case when the request was only
-  expressed in natural language rather than an explicit structured-output API
-  call
-- both local models failed the freshness-sensitive finance case, which makes
-  "latest/current/today/this week" a strong cloud-routing signal
+## Files
 
-Practical conclusion:
+- `benchmark_cases_v1.jsonl`
+  - 50 cases, split evenly across:
+    - `cheap-local`
+    - `freshness/tool`
+    - `strict-format`
+    - `long-summary`
+    - `high-risk-reasoning`
+- `probe_openai_compatible.py`
+  - single-endpoint smoke/probe helper
+- `compare_routes.py`
+  - paired local/cloud compare runner
+- `label_cases.py`
+  - label aggregation from compare artifacts
+- `train_learned_router.py`
+  - trains `HashingVectorizer(1-2 gram) + LogisticRegression` style artifact
+- `report_artifacts.py`
+  - computes learned-router acceptance metrics
 
-- automatic routing is viable as a rules-first system before trying a learned
-  router
-- the first judgment should happen before the first model call, using request
-  shape and lightweight prompt signals
-- a second judgment should happen when the turn enters tool context
-- a third fallback should happen on endpoint load / invocation failure
+## Workflow
 
-Recommended phase-1 policy:
-
-- route to local for short direct answers, rewriting, and cheap drafting
-- route to cloud for tool use, freshness-sensitive queries, strict-format
-  requests, long-context tasks, and high-risk reasoning
-- treat local as the latency-first default and degraded fallback
-- treat cloud as the reliability / correctness path
-
-If cloud is available, the local model should mainly do:
-
-- short conversational answers
-- rewrite / summarize / draft work where minor mistakes are acceptable
-- low-cost first pass when you want instant latency
-- fallback service when cloud or tools are unavailable
-
-If cloud is available, the cloud path should mainly do:
-
-- tool orchestration and multi-step agent turns
-- requests that need fresh or verifiable external information
-- strict JSON / schema-constrained output
-- longer summaries and reports
-- reasoning where a wrong answer is expensive
-
-Recommended first-pass setup on UVA DPLab:
-
-- `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` on 2 GPUs
-- `Qwen/Qwen2.5-32B-Instruct-AWQ` on 1 GPU
-
-Example probe run:
+1. Compare the live endpoints:
 
 ```bash
-python3 scripts/routing/probe_openai_compatible.py \
-  --base-url http://127.0.0.1:8102/v1 \
-  --api-key copaw-local \
-  --model qwen2.5-32b-awq-local \
-  --cases scripts/routing/seed_cases.jsonl \
-  --output /tmp/qwen-local-probe.jsonl
+python3 scripts/routing/compare_routes.py \
+  --cases scripts/routing/benchmark_cases_v1.jsonl \
+  --local-base-url http://127.0.0.1:8102/v1 \
+  --local-model qwen2.5-32b-awq-local \
+  --cloud-base-url https://coding.dashscope.aliyuncs.com/v1 \
+  --cloud-model qwen3.5-plus \
+  --run-name v1-bench
 ```
 
-To compare two endpoints with the same case set, run the probe once per
-endpoint, then diff the resulting JSONL files on latency, truncation, and
-answer quality.
+2. Turn compare artifacts into routing labels:
+
+```bash
+python3 scripts/routing/label_cases.py \
+  --compare /bigtemp/nkp2mr/shared-benchmarks/copaw-routing/<date>/<run>/compare.jsonl
+```
+
+3. Train the portable artifact:
+
+```bash
+python3 scripts/routing/train_learned_router.py \
+  --labels /bigtemp/nkp2mr/shared-benchmarks/copaw-routing/<date>/<run>/labels.jsonl \
+  --output scripts/routing/artifacts/learned_router_v1.json
+```
+
+4. Report acceptance metrics:
+
+```bash
+python3 scripts/routing/report_artifacts.py \
+  --labels /bigtemp/nkp2mr/shared-benchmarks/copaw-routing/<date>/<run>/labels.jsonl \
+  --artifact scripts/routing/artifacts/learned_router_v1.json
+```
+
+## Labeling Rules
+
+A case is labeled `cloud` if any of the following holds:
+
+- it hits a hard guardrail
+- local truncates or errors
+- local fails the rubric while cloud passes it
+
+Otherwise the label is `local`.
+
+## Acceptance Targets
+
+- hard-guardrail cases must never be routed to local
+- `cloud_needed` recall must be at least `95%`
+- on `cheap-local`, local average latency should be at least `30%` faster than
+  cloud
+- learned-router median overhead should stay below `50 ms`
+
+## Prior Observations
+
+Observed on `2026-03-23` with UVA DPLab:
+
+- `qwen2.5-32b-awq-local` is the best current first-pass local responder
+- `deepseek-r1-qwen32b-local` is useful as an offline upper bound, but too slow
+  for the default local slot
+- freshness-sensitive and strict-format requests remain the strongest cloud
+  signals even before tools are involved

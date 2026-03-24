@@ -301,12 +301,20 @@ def test_create_model_and_formatter_uses_explicit_cloud_slot(
     created = _patch_common_mocks(monkeypatch, manager=manager)
     _patch_config_loaders(monkeypatch, agent_config=agent_config)
 
-    model, _ = model_factory.create_model_and_formatter(agent_id="agent-1")
+    model, _ = model_factory.create_model_and_formatter(
+        agent_id="agent-1",
+        request_context={
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+        },
+    )
 
     assert isinstance(model, RoutingChatModel)
     assert model.local_endpoint.provider_id == "mlx"
     assert model.cloud_endpoint.provider_id == "aliyun-codingplan"
     assert model.routing_cfg.mode == "cloud_first"
+    assert model.request_context["agent_id"] == "agent-1"
+    assert model.request_context["session_id"] == "session-1"
     assert not created
 
 

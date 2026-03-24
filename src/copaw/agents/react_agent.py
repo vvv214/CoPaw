@@ -132,7 +132,9 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         sys_prompt = self._build_sys_prompt()
 
         # Create model and formatter using factory method
-        model, formatter = create_model_and_formatter()
+        model, formatter = create_model_and_formatter(
+            request_context=self._request_context,
+        )
 
         # Initialize parent ReActAgent
         super().__init__(
