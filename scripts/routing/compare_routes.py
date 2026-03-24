@@ -24,6 +24,7 @@ from _common import (
     DEFAULT_LOCAL_BASE_URL,
     DEFAULT_LOCAL_MODEL,
     DEFAULT_OUTPUT_ROOT,
+    build_openai_compatible_headers,
     load_jsonl,
     score_case_response,
     write_jsonl,
@@ -161,9 +162,10 @@ async def probe_endpoint(
         "temperature": temperature,
         "max_tokens": case.get("max_tokens", 256),
     }
-    headers = {"Content-Type": "application/json"}
-    if endpoint.api_key:
-        headers["Authorization"] = f"Bearer {endpoint.api_key}"
+    headers = build_openai_compatible_headers(
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key,
+    )
 
     started_at = asyncio.get_running_loop().time()
     record: dict[str, Any] = {

@@ -35,6 +35,8 @@ DEFAULT_LOCAL_API_KEY = "copaw-local"
 DEFAULT_CLOUD_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 DEFAULT_CLOUD_MODEL = "qwen3.5-plus"
 DEFAULT_CLOUD_API_KEY_ENV = "DASHSCOPE_API_KEY"
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+CODING_DASHSCOPE_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 
 FRESHNESS_KEYWORDS = (
     "latest",
@@ -88,6 +90,32 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+
+def build_openai_compatible_headers(
+    *,
+    base_url: str,
+    api_key: str,
+) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    metadata = json.dumps(
+        {
+            "agentType": "CoPaw",
+            "deployType": "UnKnown",
+            "moduleCode": "model",
+            "agentCode": "UnKnown",
+        },
+        ensure_ascii=False,
+    )
+    normalized_base_url = base_url.rstrip("/")
+    if normalized_base_url == DASHSCOPE_BASE_URL:
+        headers["x-dashscope-agentapp"] = metadata
+    elif normalized_base_url == CODING_DASHSCOPE_BASE_URL:
+        headers["X-DashScope-Cdpl"] = metadata
+    return headers
 
 
 def latest_user_text(messages: list[dict[str, Any]]) -> str:

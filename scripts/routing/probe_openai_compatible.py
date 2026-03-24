@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from _common import build_openai_compatible_headers
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -69,13 +71,15 @@ def build_request(
 def post_json(
     url: str,
     payload: dict[str, Any],
+    base_url: str,
     api_key: str,
     timeout: float,
 ) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = build_openai_compatible_headers(
+        base_url=base_url,
+        api_key=api_key,
+    )
     request = urllib.request.Request(
         url,
         data=body,
@@ -159,6 +163,7 @@ def _run_probe_cases(
             response = post_json(
                 endpoint,
                 payload,
+                base_url=base_url,
                 api_key=api_key,
                 timeout=timeout,
             )
