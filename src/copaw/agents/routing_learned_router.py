@@ -123,7 +123,10 @@ def resolve_default_learned_router_artifact_path() -> Path:
         candidate = parent / "pyproject.toml"
         if candidate.exists():
             return (
-                parent / "scripts" / "routing" / "artifacts"
+                parent
+                / "scripts"
+                / "routing"
+                / "artifacts"
                 / "learned_router_v1.json"
             )
 
@@ -150,7 +153,7 @@ def clear_learned_router_artifact_cache() -> None:
 def load_learned_router_artifact(
     path: Path | None = None,
 ) -> LearnedRouterArtifact | None:
-    artifact_path = (path or resolve_default_learned_router_artifact_path())
+    artifact_path = path or resolve_default_learned_router_artifact_path()
     if not artifact_path.exists():
         return None
     try:
@@ -181,10 +184,9 @@ def predict_route_with_artifact(
     for structured_index, feature_name in enumerate(
         artifact.structured_feature_names,
     ):
-        linear_score += (
-            artifact.coefficients[offset + structured_index]
-            * structured_values.get(feature_name, 0.0)
-        )
+        linear_score += artifact.coefficients[
+            offset + structured_index
+        ] * structured_values.get(feature_name, 0.0)
 
     p_cloud = _sigmoid(linear_score)
     return LearnedRoutePrediction(
@@ -221,9 +223,7 @@ def build_structured_feature_values(
         "prompt_chars": min(float(signals.prompt_chars), 20000.0) / 1000.0,
         "message_count": min(float(signals.message_count), 100.0),
         "non_text": 1.0 if signals.non_text else 0.0,
-        "recent_tool_context": (
-            1.0 if signals.recent_tool_context else 0.0
-        ),
+        "recent_tool_context": (1.0 if signals.recent_tool_context else 0.0),
         "tool_choice": _encode_tool_choice(signals.tool_choice),
         "freshness_flag": 1.0 if signals.freshness_flag else 0.0,
         "strict_format_flag": 1.0 if signals.strict_format_flag else 0.0,

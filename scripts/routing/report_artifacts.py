@@ -40,7 +40,9 @@ def main() -> int:
     cloud_needed_labels = [
         record for record in labels if record["label"] == "cloud"
     ]
-    cheap_local = [record for record in labels if record["bucket"] == "cheap-local"]
+    cheap_local = [
+        record for record in labels if record["bucket"] == "cheap-local"
+    ]
     inference_latencies_ms: list[float] = []
     hard_guardrail_total = 0
     hard_guardrail_misses = 0
@@ -57,7 +59,7 @@ def main() -> int:
                 build_signals_for_case(record),
             ).route
             inference_latencies_ms.append(
-                (time.perf_counter() - started_at) * 1000.0
+                (time.perf_counter() - started_at) * 1000.0,
             )
         predicted_routes.append(predicted_route)
         if hard_guardrail and predicted_route != "cloud":

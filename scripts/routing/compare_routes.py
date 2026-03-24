@@ -115,7 +115,7 @@ async def main() -> int:
                         temperature=args.temperature,
                     )
                     for endpoint in endpoints
-                ]
+                ],
             )
             compare_records.append(
                 {
@@ -130,9 +130,7 @@ async def main() -> int:
                         "hard_guardrail_reason",
                         "",
                     ),
-                    "results": {
-                        result["route"]: result for result in results
-                    },
+                    "results": {result["route"]: result for result in results},
                 },
             )
 
@@ -226,8 +224,8 @@ async def probe_endpoint(
 def build_output_dir(root: Path, *, run_name: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     suffix = run_name.strip() or "compare"
-    output_dir = root / datetime.now().strftime("%Y-%m-%d") / (
-        f"{timestamp}-{suffix}"
+    output_dir = (
+        root / datetime.now().strftime("%Y-%m-%d") / (f"{timestamp}-{suffix}")
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
@@ -236,11 +234,7 @@ def build_output_dir(root: Path, *, run_name: str) -> Path:
 def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     buckets = sorted({record["bucket"] for record in records})
     routes = sorted(
-        {
-            route
-            for record in records
-            for route in record["results"]
-        }
+        {route for record in records for route in record["results"]},
     )
     summary: dict[str, Any] = {"cases": len(records), "routes": {}}
     for route in routes:

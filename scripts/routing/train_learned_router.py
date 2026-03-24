@@ -9,7 +9,6 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from _common import DEFAULT_ARTIFACT_PATH, build_dense_feature_row, load_jsonl
 
@@ -49,7 +48,9 @@ def main() -> int:
         for probability in probabilities
     ]
     accuracy = sum(
-        1 for prediction, target in zip(predictions, targets) if prediction == target
+        1
+        for prediction, target in zip(predictions, targets)
+        if prediction == target
     ) / max(1, len(targets))
     cloud_targets = [target for target in targets if target == 1]
     cloud_hits = sum(
@@ -130,9 +131,7 @@ def train_router_with_sklearn(
         random_state=0,
     )
     model.fit(rows, targets)
-    coefficients = [
-        float(value) for value in model.coef_[0].tolist()
-    ]
+    coefficients = [float(value) for value in model.coef_[0].tolist()]
     intercept = float(model.intercept_[0])
     return coefficients, intercept, "sklearn.LogisticRegression"
 

@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """Shared helpers for routing benchmark scripts."""
 
+# pylint: disable=wrong-import-position
+
 from __future__ import annotations
 
 import json
@@ -18,7 +20,7 @@ if str(SCRIPT_DIR) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from copaw.agents.routing_learned_router import (  # noqa: E402
+from copaw.agents.routing_learned_router import (
     RoutingSignals,
     build_structured_feature_values,
     build_text_feature_counts,
@@ -121,7 +123,7 @@ def build_signals_for_case(case: dict[str, Any]) -> RoutingSignals:
         freshness_flag=looks_freshness_sensitive(text),
         strict_format_flag=looks_strict_format_request(text),
         structured_output_requested=bool(
-            case.get("hard_guardrail_reason") == "structured_output"
+            case.get("hard_guardrail_reason") == "structured_output",
         ),
         hard_rule_result=str(case.get("hard_guardrail_reason") or ""),
     )
@@ -177,8 +179,7 @@ def score_case_response(
     if rubric.get("regex_all"):
         patterns = [str(item) for item in rubric["regex_all"]]
         passed = all(
-            re.search(pattern, response_text, flags=re.IGNORECASE)
-            is not None
+            re.search(pattern, response_text, flags=re.IGNORECASE) is not None
             for pattern in patterns
         )
         record_check("regex_all", passed, patterns)
