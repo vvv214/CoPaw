@@ -185,8 +185,10 @@ def test_create_model_and_formatter_uses_agent_active_cloud_fallback(
     assert isinstance(model, RoutingChatModel)
     assert model.local_endpoint.provider_id == "llamacpp"
     assert model.local_endpoint.model_name == "Qwen2.5-0.5B-Instruct-GGUF"
+    assert model.local_endpoint.is_local is True
     assert model.cloud_endpoint.provider_id == "openai"
     assert model.cloud_endpoint.model_name == "gpt-5"
+    assert model.cloud_endpoint.is_local is False
     assert formatter.formatter_for == "OpenAIChatFormatter"
     assert not created
 
@@ -222,6 +224,8 @@ async def test_create_model_and_formatter_loads_only_selected_cloud_route(
 
     assert isinstance(model, RoutingChatModel)
     assert not created
+    assert model.local_endpoint.is_local is True
+    assert model.cloud_endpoint.is_local is False
 
     response = await model(
         messages=[{"role": "user", "content": "hi"}],

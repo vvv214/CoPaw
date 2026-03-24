@@ -272,6 +272,9 @@ def _create_routing_endpoint(
     from .routing_chat_model import RoutingEndpoint
 
     provider_id = model_slot.provider_id
+    provider = manager.get_provider(provider_id)
+    if provider is None:
+        raise ValueError(f"Provider '{provider_id}' not found.")
     chat_model_class = _get_chat_model_class_for_provider(
         provider_id,
         manager=manager,
@@ -290,6 +293,7 @@ def _create_routing_endpoint(
     return RoutingEndpoint(
         provider_id=provider_id,
         model_name=model_slot.model,
+        is_local=bool(provider.is_local),
         formatter_family=_get_formatter_for_chat_model(chat_model_class),
         loader=_load_endpoint,
     )

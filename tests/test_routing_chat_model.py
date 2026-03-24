@@ -66,6 +66,7 @@ def _endpoint(
     model_name: str,
     *,
     fail_on_call: bool = False,
+    is_local: bool = False,
 ) -> RoutingEndpoint:
     def _load():
         return (
@@ -80,18 +81,25 @@ def _endpoint(
     return RoutingEndpoint(
         provider_id=provider_id,
         model_name=model_name,
+        is_local=is_local,
         formatter_family=DummyFormatter,
         loader=_load,
     )
 
 
-def _failing_endpoint(provider_id: str, model_name: str) -> RoutingEndpoint:
+def _failing_endpoint(
+    provider_id: str,
+    model_name: str,
+    *,
+    is_local: bool = False,
+) -> RoutingEndpoint:
     def _load():
         raise RuntimeError("load failed")
 
     return RoutingEndpoint(
         provider_id=provider_id,
         model_name=model_name,
+        is_local=is_local,
         formatter_family=DummyFormatter,
         loader=_load,
     )
@@ -100,7 +108,11 @@ def _failing_endpoint(provider_id: str, model_name: str) -> RoutingEndpoint:
 @pytest.mark.asyncio
 async def test_default_local_first_uses_local_route() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -129,7 +141,11 @@ async def test_hard_guardrail_override_beats_learned_router(
     clear_learned_router_artifact_cache()
 
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
         request_context={
@@ -154,7 +170,11 @@ async def test_hard_guardrail_override_beats_learned_router(
 @pytest.mark.asyncio
 async def test_structured_output_forces_cloud_route() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -172,7 +192,11 @@ async def test_structured_output_forces_cloud_route() -> None:
 @pytest.mark.asyncio
 async def test_strict_format_prompt_forces_cloud_route() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -197,7 +221,11 @@ async def test_strict_format_prompt_forces_cloud_route() -> None:
 @pytest.mark.asyncio
 async def test_freshness_sensitive_prompt_forces_cloud_route() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -221,7 +249,11 @@ async def test_freshness_sensitive_prompt_forces_cloud_route() -> None:
 @pytest.mark.asyncio
 async def test_missing_artifact_falls_back_to_rule_based_local() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -250,7 +282,11 @@ async def test_learned_router_threshold_routes_to_cloud(
     clear_learned_router_artifact_cache()
 
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
         request_context={
@@ -273,9 +309,53 @@ async def test_learned_router_threshold_routes_to_cloud(
 
 
 @pytest.mark.asyncio
+async def test_learned_router_prediction_is_suppressed_for_local_cloud_slot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    artifact_path = _write_artifact(tmp_path, intercept=1.0)
+    event_path = tmp_path / "routing-events.jsonl"
+    monkeypatch.setenv(
+        "COPAW_ROUTING_LEARNED_ROUTER_ARTIFACT",
+        str(artifact_path),
+    )
+    monkeypatch.setenv("COPAW_ROUTING_EVENT_LOG_PATH", str(event_path))
+    clear_learned_router_artifact_cache()
+
+    model = RoutingChatModel(
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
+        cloud_endpoint=_endpoint(
+            "deepseek-local-provider",
+            "deepseek-local-model",
+            is_local=True,
+        ),
+        routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
+    )
+
+    response = await model(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[],
+    )
+
+    event = _read_single_event(event_path)
+    assert response.provider_id == "local-provider"
+    assert event["chosen_route"] == "local"
+    assert event["decision_source"] == "rule_based"
+    assert event["learned_score"] is None
+
+
+@pytest.mark.asyncio
 async def test_recent_tool_context_forces_cloud_route() -> None:
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -295,7 +375,11 @@ async def test_recent_tool_context_forces_cloud_route() -> None:
 @pytest.mark.asyncio
 async def test_local_load_failure_falls_back_to_cloud() -> None:
     model = RoutingChatModel(
-        local_endpoint=_failing_endpoint("local-provider", "local-model"),
+        local_endpoint=_failing_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
     )
@@ -328,6 +412,7 @@ async def test_invocation_fallback_reuses_secondary_slot_and_logs_event(
             "local-provider",
             "local-model",
             fail_on_call=True,
+            is_local=True,
         ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
@@ -347,6 +432,65 @@ async def test_invocation_fallback_reuses_secondary_slot_and_logs_event(
 
 
 @pytest.mark.asyncio
+async def test_long_prompt_soft_promotion_is_suppressed_for_local_cloud_slot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    event_path = tmp_path / "routing-events.jsonl"
+    monkeypatch.setenv("COPAW_ROUTING_EVENT_LOG_PATH", str(event_path))
+
+    model = RoutingChatModel(
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
+        cloud_endpoint=_endpoint(
+            "deepseek-local-provider",
+            "deepseek-local-model",
+            is_local=True,
+        ),
+        routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
+    )
+
+    response = await model(
+        messages=[{"role": "user", "content": "x" * 7000}],
+        tools=[],
+    )
+
+    event = _read_single_event(event_path)
+    assert response.provider_id == "local-provider"
+    assert event["chosen_route"] == "local"
+    assert event["decision_source"] == "rule_based"
+    assert event["reasons"] == ["mode:local_first"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_first_still_uses_cloud_for_local_cloud_slot() -> None:
+    model = RoutingChatModel(
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
+        cloud_endpoint=_endpoint(
+            "deepseek-local-provider",
+            "deepseek-local-model",
+            is_local=True,
+        ),
+        routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="cloud_first"),
+    )
+
+    response = await model(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[],
+    )
+
+    assert response.provider_id == "deepseek-local-provider"
+    assert response.model_name == "deepseek-local-model"
+
+
+@pytest.mark.asyncio
 async def test_routing_event_contains_required_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -361,7 +505,11 @@ async def test_routing_event_contains_required_fields(
     clear_learned_router_artifact_cache()
 
     model = RoutingChatModel(
-        local_endpoint=_endpoint("local-provider", "local-model"),
+        local_endpoint=_endpoint(
+            "local-provider",
+            "local-model",
+            is_local=True,
+        ),
         cloud_endpoint=_endpoint("cloud-provider", "cloud-model"),
         routing_cfg=AgentsLLMRoutingConfig(enabled=True, mode="local_first"),
         request_context={

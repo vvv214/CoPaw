@@ -104,31 +104,34 @@ class RoutingPolicy:
         self,
         *,
         signals: RoutingSignals,
+        allow_soft_cloud_promotion: bool = True,
     ) -> RoutingDecision:
-        cloud_reasons: list[tuple[bool, str]] = [
-            (
-                signals.prompt_chars >= LONG_PROMPT_CHAR_THRESHOLD,
-                f"prompt_chars>={LONG_PROMPT_CHAR_THRESHOLD}",
-            ),
-            (
-                signals.message_count >= LONG_CONVERSATION_MESSAGE_THRESHOLD,
-                f"message_count>={LONG_CONVERSATION_MESSAGE_THRESHOLD}",
-            ),
-        ]
-        for condition, reason in cloud_reasons:
-            if condition:
-                return RoutingDecision(
-                    route="cloud",
-                    reasons=[reason],
-                    source="rule_based",
-                )
-
         if getattr(self.cfg, "mode", "local_first") == "cloud_first":
             return RoutingDecision(
                 route="cloud",
                 reasons=["mode:cloud_first"],
                 source="rule_based",
             )
+
+        if allow_soft_cloud_promotion:
+            cloud_reasons: list[tuple[bool, str]] = [
+                (
+                    signals.prompt_chars >= LONG_PROMPT_CHAR_THRESHOLD,
+                    f"prompt_chars>={LONG_PROMPT_CHAR_THRESHOLD}",
+                ),
+                (
+                    signals.message_count
+                    >= LONG_CONVERSATION_MESSAGE_THRESHOLD,
+                    f"message_count>={LONG_CONVERSATION_MESSAGE_THRESHOLD}",
+                ),
+            ]
+            for condition, reason in cloud_reasons:
+                if condition:
+                    return RoutingDecision(
+                        route="cloud",
+                        reasons=[reason],
+                        source="rule_based",
+                    )
 
         return RoutingDecision(
             route="local",
@@ -141,6 +144,7 @@ class RoutingPolicy:
 class RoutingEndpoint:
     provider_id: str
     model_name: str
+    is_local: bool
     formatter_family: Type[FormatterBase]
     loader: Callable[[], tuple[ChatModelBase, FormatterBase]]
     _model: ChatModelBase | None = field(default=None, init=False, repr=False)
@@ -333,7 +337,10 @@ class RoutingChatModel(ChatModelBase):
         if hard_guardrail is not None:
             return hard_guardrail
 
-        if self.learned_router_artifact is not None:
+        if (
+            self.learned_router_artifact is not None
+            and self._allow_soft_cloud_promotion()
+        ):
             try:
                 prediction = predict_route_with_artifact(
                     self.learned_router_artifact,
@@ -347,7 +354,13 @@ class RoutingChatModel(ChatModelBase):
                     exc_info=True,
                 )
 
-        return self.policy.fallback_decide(signals=signals)
+        return self.policy.fallback_decide(
+            signals=signals,
+            allow_soft_cloud_promotion=self._allow_soft_cloud_promotion(),
+        )
+
+    def _allow_soft_cloud_promotion(self) -> bool:
+        return not self.cloud_endpoint.is_local
 
     def _decision_from_prediction(
         self,
