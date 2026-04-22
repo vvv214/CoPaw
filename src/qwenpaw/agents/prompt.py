@@ -362,32 +362,19 @@ def build_bootstrap_guidance(
 def _get_active_model_info():
     """Resolve the active model's ModelInfo and model name.
 
-    Tries agent-specific model first, then falls back to global.
+    Resolves the effective model slot used for runtime calls.
 
     Returns:
         A ``(ModelInfo, model_name)`` tuple.  Both elements are *None*
         when the active model cannot be resolved.
     """
     try:
-        from ..app.agent_context import get_current_agent_id
-        from ..config.config import load_agent_config
+        from .routing_chat_model import resolve_effective_model_slot
         from ..providers.provider_manager import ProviderManager
 
         manager = ProviderManager.get_instance()
 
-        # Try to get agent-specific model first
-        active = None
-        try:
-            agent_id = get_current_agent_id()
-            agent_config = load_agent_config(agent_id)
-            if agent_config.active_model:
-                active = agent_config.active_model
-        except Exception:
-            pass
-
-        # Fallback to global active model
-        if not active:
-            active = manager.get_active_model()
+        active = resolve_effective_model_slot()
 
         if not active:
             return None, None

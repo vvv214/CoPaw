@@ -577,19 +577,28 @@ async def get_active_models(
         )
 
     try:
+        from ...agents.routing_chat_model import (
+            resolve_effective_model_slot,
+        )
+
         target_agent_id = agent_id
         if target_agent_id is None:
             workspace = await get_agent_for_request(request)
             target_agent_id = workspace.agent_id
 
-        agent_model = await _load_agent_model(request, target_agent_id)
-        if agent_model:
+        effective_model = resolve_effective_model_slot(target_agent_id)
+        if effective_model:
             logger.info(
-                "Returning agent-specific model for %s: %s",
+                "Returning effective model for %s: %s",
                 target_agent_id,
-                agent_model,
+                effective_model,
             )
-            return ActiveModelsInfo(active_llm=agent_model)
+            return ActiveModelsInfo(active_llm=effective_model)
+        logger.info(
+            "Effective model for %s is unresolved under current routing mode",
+            target_agent_id,
+        )
+        return ActiveModelsInfo(active_llm=None)
     except (
         HTTPException,
         OSError,
@@ -598,7 +607,7 @@ async def get_active_models(
         AppBaseException,
     ) as exc:
         logger.warning(
-            "Failed to get agent-specific model: %s",
+            "Failed to get effective model: %s",
             exc,
             exc_info=True,
         )
